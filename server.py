@@ -37,6 +37,7 @@ import random
 import logging
 import asyncio
 import httpx
+from contextvars import ContextVar
 
 
 # --- Ensure same-directory modules can be imported ---
@@ -75,6 +76,24 @@ _BUCKETS_CACHE_TTL = 15.0  # 秒
 def _invalidate_buckets_cache():
     _BUCKETS_CACHE["ts"] = 0.0
     _BUCKETS_CACHE["payload"] = None
+
+# --- Multi-identity MCP URL key support ---
+# 每个 URL key 对应一个 created_by 身份标签，用于区分谁写入了这条记忆。
+# 设置方式：OMBRE_MCP_KEYS=key1:身份1,key2:身份2（逗号分隔，冒号分割 key 和身份名）
+# 未设置时退回 OMBRE_MCP_URL_KEY 单 key，created_by 默认 "ai"。
+_mcp_identity: ContextVar[str] = ContextVar("mcp_identity", default="ai")
+
+def _parse_mcp_keys() -> dict:
+    raw = os.environ.get("OMBRE_MCP_KEYS", "").strip()
+    if not raw:
+        return {}
+    result = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if ":" in pair:
+            k, v = pair.split(":", 1)
+            result[k.strip()] = v.strip()
+    return result
 
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
@@ -258,6 +277,7 @@ async def _merge_or_create(
     arousal: float,
     name: str = "",
     event_time: str = None,
+    created_by: str = None,
 ) -> tuple[str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -318,6 +338,7 @@ async def _merge_or_create(
         arousal=arousal,
         name=name or None,
         event_time=event_time,
+        created_by=created_by,
     )
     # --- Generate embedding for new bucket ---
     try:
@@ -684,6 +705,7 @@ async def hold(
 
     importance = max(1, min(10, importance))
     extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
+    creator = _mcp_identity.get()
 
     # --- Feel mode: store as feel type, minimal metadata ---
     # --- Feel 模式：存为 feel 类型，最少元数据 ---
@@ -700,6 +722,7 @@ async def hold(
             arousal=feel_arousal,
             name=None,
             bucket_type="feel",
+            created_by=creator,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
@@ -749,6 +772,7 @@ async def hold(
             bucket_type="permanent",
             pinned=True,
             event_time=event_time,
+            created_by=creator,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
@@ -766,6 +790,7 @@ async def hold(
         arousal=arousal,
         name=suggested_name,
         event_time=event_time or None,
+        created_by=creator,
     )
 
     action = "合并→" if is_merged else "新建→"
@@ -783,6 +808,8 @@ async def grow(content: str, event_time: str = "") -> str:
 
     if not content or not content.strip():
         return "内容为空，无法整理。"
+
+    creator = _mcp_identity.get()
 
     # --- Short content fast path: skip digest, use hold logic directly ---
     # --- 短内容快速路径：跳过 digest 拆分，直接走 hold 逻辑省一次 API ---
@@ -808,6 +835,7 @@ async def grow(content: str, event_time: str = "") -> str:
             arousal=analysis.get("arousal", 0.3),
             name=analysis.get("suggested_name", ""),
             event_time=event_time or None,
+            created_by=creator,
         )
         action = "合并" if is_merged else "新建"
         return f"{action} → {result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
@@ -838,6 +866,7 @@ async def grow(content: str, event_time: str = "") -> str:
             arousal=analysis.get("arousal", 0.3),
             name=analysis.get("suggested_name", ""),
             event_time=event_time or None,
+            created_by=creator,
         )
         return f"⚠ 自动拆分失败,已【整段存为一条】记忆(未拆分,内容没丢)→ {result_name}"
 
@@ -858,6 +887,7 @@ async def grow(content: str, event_time: str = "") -> str:
                 arousal=item.get("arousal", 0.3),
                 name=item.get("name", ""),
                 event_time=event_time or None,
+                created_by=creator,
             )
 
             if is_merged:
@@ -3945,14 +3975,20 @@ if __name__ == "__main__":
                 #   · compare_digest 防时序侧信道。
                 #   · key 已在 uvicorn access log 过滤器里脱敏 (见下方 _MaskUrlKeyFilter), 不进日志。
                 if path.startswith("/mcp"):
-                    url_key_expected = os.environ.get("OMBRE_MCP_URL_KEY", "").strip()
                     url_key_provided = request.query_params.get("key", "")
-                    if (
-                        url_key_expected
-                        and url_key_provided
-                        and _hmac.compare_digest(url_key_provided, url_key_expected)
-                    ):
-                        return await call_next(request)
+                    if url_key_provided:
+                        # Check multi-key identity map first
+                        for k, identity in _parse_mcp_keys().items():
+                            if _hmac.compare_digest(url_key_provided, k):
+                                tok = _mcp_identity.set(identity)
+                                try:
+                                    return await call_next(request)
+                                finally:
+                                    _mcp_identity.reset(tok)
+                        # Fall back to single OMBRE_MCP_URL_KEY
+                        url_key_expected = os.environ.get("OMBRE_MCP_URL_KEY", "").strip()
+                        if url_key_expected and _hmac.compare_digest(url_key_provided, url_key_expected):
+                            return await call_next(request)
                 return _AuthJSONResponse(
                     {"error": "unauthorized — missing or invalid X-Admin-Token"},
                     status_code=401,
@@ -3970,22 +4006,34 @@ if __name__ == "__main__":
 
             async def __call__(self, scope, receive, send):
                 if scope.get("type") == "http":
-                    key = os.environ.get("OMBRE_MCP_URL_KEY", "").strip()
                     path = scope.get("path", "")
-                    if key and path.startswith("/"):
+                    if path.startswith("/"):
                         parts = path.split("/", 2)  # ["", "<seg>", "rest..."]
                         seg = parts[1] if len(parts) > 1 else ""
                         rest = "/" + parts[2] if len(parts) > 2 else ""
-                        # 必须形如 /<seg>/mcp 或 /<seg>/mcp/... 且 <seg> 是正确密钥
-                        if (
-                            seg
-                            and (rest == "/mcp" or rest.startswith("/mcp/"))
-                            and _hmac.compare_digest(seg, key)
-                        ):
-                            scope = dict(scope)
-                            scope["path"] = rest
-                            scope["raw_path"] = rest.encode("latin-1")
-                            scope["_mcp_url_key_ok"] = True
+                        if seg and (rest == "/mcp" or rest.startswith("/mcp/")):
+                            matched_identity = None
+                            # Check multi-key identity map
+                            for k, identity in _parse_mcp_keys().items():
+                                if _hmac.compare_digest(seg, k):
+                                    matched_identity = identity
+                                    break
+                            # Fall back to single OMBRE_MCP_URL_KEY
+                            if matched_identity is None:
+                                key_single = os.environ.get("OMBRE_MCP_URL_KEY", "").strip()
+                                if key_single and _hmac.compare_digest(seg, key_single):
+                                    matched_identity = "ai"
+                            if matched_identity is not None:
+                                scope = dict(scope)
+                                scope["path"] = rest
+                                scope["raw_path"] = rest.encode("latin-1")
+                                scope["_mcp_url_key_ok"] = True
+                                tok = _mcp_identity.set(matched_identity)
+                                try:
+                                    await self.app(scope, receive, send)
+                                finally:
+                                    _mcp_identity.reset(tok)
+                                return
                 await self.app(scope, receive, send)
 
         # add_middleware 后加的在外层 → 先加 AuthGate (内层), 最后加 CORS (外层),
