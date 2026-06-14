@@ -296,6 +296,10 @@ async def _merge_or_create(
         logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
         existing = []
 
+    # Auto-inject identity tag so breath filtering works correctly
+    if created_by and created_by not in tags:
+        tags = list(tags) + [created_by]
+
     if existing and existing[0].get("score", 0) > config.get("merge_threshold", 75):
         bucket = existing[0]
         # --- Never merge into pinned/protected buckets ---
@@ -725,7 +729,7 @@ async def hold(
         feel_arousal = arousal if 0 <= arousal <= 1 else 0.3
         bucket_id = await bucket_mgr.create(
             content=content,
-            tags=[],
+            tags=([creator] if creator else []),
             importance=5,
             domain=[],
             valence=feel_valence,
@@ -766,7 +770,8 @@ async def hold(
     auto_tags = analysis["tags"]
     suggested_name = analysis.get("suggested_name", "")
 
-    all_tags = list(dict.fromkeys(auto_tags + extra_tags))
+    identity_tag = [creator] if creator else []
+    all_tags = list(dict.fromkeys(auto_tags + extra_tags + identity_tag))
 
     # --- Pinned buckets bypass merge and are created directly in permanent dir ---
     # --- 钉选桶跳过合并，直接新建到 permanent 目录 ---
