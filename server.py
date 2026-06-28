@@ -3969,6 +3969,18 @@ if __name__ == "__main__":
                     return await call_next(request)
                 provided = request.headers.get("X-Admin-Token", "")
                 if expected and provided and _hmac.compare_digest(provided, expected):
+                    # Admin token 通过 → 仍可 opt-in 用 URL key 分配身份
+                    # 无 key = 保持默认 "ai"（完全向后兼容）
+                    if path.startswith("/mcp"):
+                        url_key_provided = request.query_params.get("key", "")
+                        if url_key_provided:
+                            for k, identity in _parse_mcp_keys().items():
+                                if _hmac.compare_digest(url_key_provided, k):
+                                    tok = _mcp_identity.set(identity)
+                                    try:
+                                        return await call_next(request)
+                                    finally:
+                                        _mcp_identity.reset(tok)
                     return await call_next(request)
                 # cookie 兜底: dashboard 工作台等页面用 Web Worker 拉数据, 这些请求不经
                 # 前端 fetch/XHR 的 header 注入(worker 读不到 localStorage), 但浏览器会自动
