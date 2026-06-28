@@ -381,7 +381,7 @@ async def breath(
     _all_identities = set(_parse_mcp_keys().values())
     _all_identities.discard(_caller)  # don't exclude caller's own tag
     _all_identities.discard("ai")     # old default memories are visible to all
-    _exclude_tagss = _all_identities   # set of tags that belong to other identities
+    _exclude_tags = _all_identities   # set of tags that belong to other identities
 
     # --- No args or empty query: surfacing mode (weight pool active push) ---
     # --- 无参数或空query：浮现模式（权重池主动推送）---
@@ -391,8 +391,8 @@ async def breath(
         except Exception as e:
             logger.error(f"Failed to list buckets for surfacing / 浮现列桶失败: {e}")
             return "记忆系统暂时无法访问。"
-        if _exclude_tagss:
-            all_buckets = [b for b in all_buckets if not (_exclude_tagss & set(b["metadata"].get("tags", [])))]
+        if _exclude_tags:
+            all_buckets = [b for b in all_buckets if not (_exclude_tags & set(b["metadata"].get("tags", [])))]
 
         # --- Highlighted buckets: always surface as core principles ---
         # --- 置顶桶(highlight=True):作为核心准则始终浮现(已内化的隐藏) ---
