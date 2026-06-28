@@ -375,9 +375,13 @@ async def breath(
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
 
-    # Identity-based tag exclusion: "keke" excludes "qiqi"-tagged buckets and vice versa
+    # Identity-based tag exclusion: each identity only sees their own memories.
+    # Buckets tagged with any OTHER known identity are excluded.
     _caller = _mcp_identity.get()
-    _exclude_tag = "qiqi" if _caller == "keke" else "keke" if _caller == "qiqi" else None
+    _all_identities = set(_parse_mcp_keys().values())
+    _all_identities.discard(_caller)  # don't exclude caller's own tag
+    _all_identities.discard("ai")     # old default memories are visible to all
+    _exclude_tagss = _all_identities   # set of tags that belong to other identities
 
     # --- No args or empty query: surfacing mode (weight pool active push) ---
     # --- 无参数或空query：浮现模式（权重池主动推送）---
@@ -387,8 +391,8 @@ async def breath(
         except Exception as e:
             logger.error(f"Failed to list buckets for surfacing / 浮现列桶失败: {e}")
             return "记忆系统暂时无法访问。"
-        if _exclude_tag:
-            all_buckets = [b for b in all_buckets if _exclude_tag not in b["metadata"].get("tags", [])]
+        if _exclude_tagss:
+            all_buckets = [b for b in all_buckets if not (_exclude_tagss & set(b["metadata"].get("tags", [])))]
 
         # --- Highlighted buckets: always surface as core principles ---
         # --- 置顶桶(highlight=True):作为核心准则始终浮现(已内化的隐藏) ---
@@ -557,8 +561,8 @@ async def breath(
     if domain.strip().lower() == "feel":
         try:
             all_buckets = await bucket_mgr.list_all(include_archive=False)
-            if _exclude_tag:
-                all_buckets = [b for b in all_buckets if _exclude_tag not in b["metadata"].get("tags", [])]
+            if _exclude_tags:
+                all_buckets = [b for b in all_buckets if not (_exclude_tags & set(b["metadata"].get("tags", [])))]
             feels = [b for b in all_buckets if b["metadata"].get("type") == "feel"]
             feels.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
             if not feels:
@@ -610,7 +614,7 @@ async def breath(
                if not (is_internalized(b["metadata"])
                        or _is_noise(b["metadata"])
                        or b["metadata"].get("type") == "feel")
-               and not (_exclude_tag and _exclude_tag in b["metadata"].get("tags", []))]
+               and not (_exclude_tags and (_exclude_tags & set(b["metadata"].get("tags", []))))]
 
     # --- Vector similarity channel: find semantically related buckets ---
     # --- 向量相似度通道：找到语义相关的桶 ---
@@ -629,7 +633,7 @@ async def breath(
                                    or is_protected(bucket["metadata"])
                                    or _is_noise(bucket["metadata"])
                                    or bucket["metadata"].get("type") == "feel"
-                                   or (_exclude_tag and _exclude_tag in bucket["metadata"].get("tags", []))):
+                                   or (_exclude_tags and (_exclude_tags & set(bucket["metadata"].get("tags", []))))):
                     bucket["score"] = round(sim_score * 100, 2)
                     bucket["vector_match"] = True
                     matches.append(bucket)
