@@ -3621,3 +3621,294 @@ input, textarea { font: inherit; color: inherit; }
   padding-top: 10px;
 }
 
+/* ========= 欲望与牵引 · 只读观察窗 ========= */
+.desire-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+.desire-top {
+  flex: 0 0 auto;
+  padding: calc(14px + env(safe-area-inset-top)) 20px 12px;
+  border-bottom: 0.5px solid var(--line);
+  background: var(--paper);
+}
+.desire-top > .app-back { margin-bottom: 15px; }
+.desire-title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 11px;
+}
+.desire-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 27px;
+  line-height: 1.08;
+  font-style: italic;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.desire-sub {
+  margin: 5px 0 0;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+.desire-readonly {
+  flex: 0 0 auto;
+  border: 0.5px solid var(--line-2);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+}
+.desire-identities {
+  display: flex;
+  gap: 6px;
+  margin-top: 16px;
+  padding-bottom: 1px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.desire-identities::-webkit-scrollbar { display: none; }
+.desire-identity {
+  flex: 0 0 auto;
+  min-width: 74px;
+  height: 34px;
+  border: 0.5px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--paper-2);
+  color: var(--ink-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 0 9px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0;
+}
+.desire-identity b {
+  min-width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--bg-2);
+  color: var(--ink-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+}
+.desire-identity.on {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+.desire-identity.on b { background: var(--accent); color: #fff; }
+.desire-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px calc(94px + env(safe-area-inset-bottom));
+}
+.desire-overview {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 72px 78px minmax(126px, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 0 4px 13px;
+  border-bottom: 0.5px solid var(--line);
+}
+.desire-overview > div:not(.desire-scope) {
+  display: flex;
+  flex-direction: column;
+}
+.desire-overview > div > b {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 500;
+  line-height: 1;
+}
+.desire-overview > div > span {
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 9px;
+}
+.desire-scope {
+  justify-self: end;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 126px;
+  height: 31px;
+  padding: 3px;
+  border-radius: 7px;
+  background: var(--bg-2);
+}
+.desire-scope button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 10px;
+}
+.desire-scope button.on {
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 1px 4px rgba(26, 25, 34, 0.08);
+}
+.desire-list {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+}
+.desire-card {
+  position: relative;
+  overflow: hidden;
+  padding: 14px 14px 13px;
+  border: 0.5px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--paper);
+}
+.desire-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--accent);
+}
+.desire-card.status-paused::before { background: var(--amber); }
+.desire-card.status-fulfilled::before { background: var(--green); }
+.desire-card.status-released::before { background: var(--ink-4); }
+.desire-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.desire-card-head time {
+  color: var(--ink-4);
+  font-family: var(--mono);
+  font-size: 8.5px;
+}
+.desire-status {
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 600;
+}
+.desire-status.paused { color: var(--amber); }
+.desire-status.fulfilled { color: var(--green); }
+.desire-status.released { color: var(--ink-4); }
+.desire-card h2 {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+.desire-why {
+  margin: 7px 0 0;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.desire-metrics {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+  margin-top: 13px;
+  padding-top: 11px;
+  border-top: 0.5px solid var(--line);
+}
+.desire-metric > span {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+}
+.desire-metric i,
+.desire-priority > span {
+  color: var(--ink-3);
+  font-size: 8.5px;
+  font-style: normal;
+}
+.desire-metric b,
+.desire-priority > b {
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.desire-metric > em {
+  display: block;
+  width: 100%;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--bg-2);
+}
+.desire-metric > em > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--rose-deep);
+}
+.desire-priority {
+  min-width: 104px;
+  display: grid;
+  grid-template-columns: auto auto auto;
+  align-items: end;
+  gap: 6px;
+}
+.desire-priority .day-card-impbar { align-items: flex-end; }
+.desire-progress {
+  margin-top: 11px;
+  padding: 9px 10px;
+  border-left: 2px solid var(--green);
+  background: color-mix(in srgb, var(--green) 7%, var(--paper));
+}
+.desire-progress span {
+  color: var(--green);
+  font-size: 8.5px;
+  font-weight: 600;
+}
+.desire-progress p {
+  margin: 3px 0 0;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.desire-empty,
+.desire-loading,
+.desire-error {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+  text-align: center;
+}
+.desire-empty span { font-family: var(--serif); font-size: 28px; color: var(--ink-4); }
+.desire-empty p { margin: 8px 0 0; font-size: 11px; }
+.desire-loading { font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em; }
+.desire-error { color: var(--red); font-size: 11px; }
+
+@media (min-width: 700px) {
+  .desire-top, .desire-body { padding-left: max(24px, calc((100vw - 680px) / 2)); padding-right: max(24px, calc((100vw - 680px) / 2)); }
+  .desire-body { padding-bottom: 32px; }
+  .desire-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .desire-page > .tabbar { display: none; }
+}

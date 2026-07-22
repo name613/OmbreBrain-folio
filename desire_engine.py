@@ -40,6 +40,17 @@ class DesireEngine:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    def identities(self) -> list[str]:
+        """Return persisted identity partition names without exposing any keys."""
+        with self._lock:
+            identities = self._read().get("identities", {})
+            if not isinstance(identities, dict):
+                return []
+            return sorted(
+                identity for identity in identities
+                if isinstance(identity, str) and identity.strip()
+            )
+
     def list(self, identity: str, include_closed: bool = False) -> list[dict]:
         with self._lock:
             items = [

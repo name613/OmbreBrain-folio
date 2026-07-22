@@ -23,6 +23,7 @@ async function api(path, opts) {
 //   #/cal              → 日历
 //   #/review           → 审阅
 //   #/setting          → 设置(主)
+//   #/setting/desires  → 各身份的持续牵引(只读)
 //   #/setting/trash    → 回收站
 //   #/setting/import   → 导入(stub)
 //   #/new              → 创建新条目
@@ -2968,6 +2969,14 @@ function SettingScreen() {
 
         <div className="setting-section-hd">数据</div>
         <div className="setting-list">
+          <div className="setting-row" onClick={() => navigate('/setting/desires')}>
+            <div className="setting-row-ic">◎</div>
+            <div className="setting-row-mid">
+              <div className="setting-row-title">欲望与牵引</div>
+              <div className="setting-row-sub">查看各身份此刻在意的方向</div>
+            </div>
+            <span className="setting-row-arrow">›</span>
+          </div>
           <div className="setting-row" onClick={() => navigate('/setting/import')}>
             <div className="setting-row-ic">↥</div>
             <div className="setting-row-mid">
@@ -3017,6 +3026,156 @@ function SettingScreen() {
 // ─────────────────────────────────────────
 // API 配置子页(/setting/api)
 // ─────────────────────────────────────────
+
+const DESIRE_STATUS = {
+  active: ['进行中', 'active'],
+  paused: ['暂停', 'paused'],
+  fulfilled: ['已实现', 'fulfilled'],
+  released: ['已放下', 'released'],
+};
+
+function desireDate(raw) {
+  const dt = new Date(raw || '');
+  if (isNaN(dt.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  }).format(dt);
+}
+
+// 只读观察窗。欲望的创建与变化只允许对应身份通过 MCP 完成。
+function DesireScreen() {
+  const [data, setData] = useState(null);
+  const [identity, setIdentity] = useState(() => localStorage.getItem('desire-identity') || '');
+  const [scope, setScope] = useState('current');
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback((name) => {
+    setLoading(true);
+    setError(null);
+    const request = target => {
+      const suffix = target ? `&identity=${encodeURIComponent(target)}` : '';
+      return api(`/api/desires?include_closed=1${suffix}`);
+    };
+    request(name)
+      .catch(e => name ? request('') : Promise.reject(e))
+      .then(next => {
+        setData(next);
+        setIdentity(next.identity);
+        localStorage.setItem('desire-identity', next.identity);
+      })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(identity); }, []);
+
+  const chooseIdentity = (name) => {
+    if (name === identity) return;
+    setIdentity(name);
+    load(name);
+  };
+
+  const items = (data && data.items) || [];
+  const visible = scope === 'all'
+    ? items
+    : items.filter(item => ['active', 'paused'].includes(item.status || 'active'));
+  const activeItems = items.filter(item => (item.status || 'active') === 'active');
+  const averageTension = activeItems.length
+    ? Math.round(activeItems.reduce((sum, item) => sum + Number(item.tension || 0), 0) / activeItems.length * 100)
+    : 0;
+
+  return (
+    <div className="desire-page">
+      <div className="desire-top">
+        <button className="app-back" onClick={() => navigate('/setting')}>‹ 设置</button>
+        <div className="app-eyebrow">
+          <span className="app-eyebrow-dot"/>
+          <span>内在牵引 · yearn</span>
+        </div>
+        <div className="desire-title-row">
+          <div>
+            <h1 className="desire-title">欲望与牵引</h1>
+            <p className="desire-sub">由每个身份自己留下的方向</p>
+          </div>
+          <span className="desire-readonly">只读</span>
+        </div>
+        <div className="desire-identities" role="tablist" aria-label="身份">
+          {(data?.identities || []).map(person => (
+            <button
+              key={person.name}
+              role="tab"
+              aria-selected={identity === person.name}
+              className={'desire-identity' + (identity === person.name ? ' on' : '')}
+              onClick={() => chooseIdentity(person.name)}
+            >
+              <span>{person.name}</span>
+              <b>{person.active_count}</b>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="desire-body">
+        {error && <div className="desire-error">{error}</div>}
+        {!error && data && (
+          <>
+            <div className="desire-overview">
+              <div><b>{activeItems.length}</b><span>正在牵引</span></div>
+              <div><b>{averageTension}%</b><span>平均强度</span></div>
+              <div className="desire-scope" role="tablist" aria-label="范围">
+                <button className={scope === 'current' ? 'on' : ''} onClick={() => setScope('current')}>此刻</button>
+                <button className={scope === 'all' ? 'on' : ''} onClick={() => setScope('all')}>全部</button>
+              </div>
+            </div>
+
+            <div className="desire-list">
+              {visible.map(item => {
+                const status = DESIRE_STATUS[item.status] || DESIRE_STATUS.active;
+                const tension = Math.round(Number(item.tension || 0) * 100);
+                return (
+                  <article className={'desire-card status-' + status[1]} key={item.id}>
+                    <div className="desire-card-head">
+                      <span className={'desire-status ' + status[1]}>{status[0]}</span>
+                      <time>{desireDate(item.updated)}</time>
+                    </div>
+                    <h2>{item.title}</h2>
+                    {item.why && <p className="desire-why">{item.why}</p>}
+                    <div className="desire-metrics">
+                      <div className="desire-metric">
+                        <span><i>牵引强度</i><b>{tension}%</b></span>
+                        <em><i style={{ width: tension + '%' }}/></em>
+                      </div>
+                      <div className="desire-priority">
+                        <span>长期优先</span>
+                        <ImpBar n={Number(item.priority || 0)} max={10} height={13} w={3} gap={2}/>
+                        <b>{item.priority || 0}</b>
+                      </div>
+                    </div>
+                    {item.progress && (
+                      <div className="desire-progress">
+                        <span>最近进展</span>
+                        <p>{item.progress}</p>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+              {!loading && visible.length === 0 && (
+                <div className="desire-empty">
+                  <span>◎</span>
+                  <p>{scope === 'current' ? '此刻还没有留下牵引' : '还没有牵引记录'}</p>
+                </div>
+              )}
+              {loading && <div className="desire-loading">读取中…</div>}
+            </div>
+          </>
+        )}
+      </div>
+      <TabBar active="setting"/>
+    </div>
+  );
+}
 
 function ApiSettingScreen() {
   const [data, setData] = useState(null);
@@ -3783,8 +3942,9 @@ function App() {
   // 开屏始终落到记忆首页:tab 类路由(review/cal/setting)重置到 home,
   // 深链(/mem/:id, /day/:k 等)保留. PWA 冷启动会带上次 hash, 不重置就停那儿
   useEffect(() => {
-    const head = (window.location.hash || '').replace(/^#\/?/, '').split('/')[0];
-    if (['review', 'cal', 'setting'].includes(head)) {
+    const [head, child] = (window.location.hash || '').replace(/^#\/?/, '').split('/');
+    const keepDesireLink = head === 'setting' && child === 'desires';
+    if (!keepDesireLink && ['review', 'cal', 'setting'].includes(head)) {
       window.location.hash = '#/';
     }
   }, []);
@@ -3809,6 +3969,7 @@ function App() {
     case 'setting':
       if (rest[0] === 'trash') return <TrashScreen/>;
       if (rest[0] === 'import') return <ImportScreen/>;
+      if (rest[0] === 'desires') return <DesireScreen/>;
       if (rest[0] === 'api') return <ApiSettingScreen/>;
       if (rest[0] === 'decay') return <DecayConfigScreen/>;
       if (rest[0] === 'scoring') return <ScoringConfigScreen/>;
