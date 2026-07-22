@@ -46,6 +46,7 @@ def test_desires_are_identity_scoped_and_persist(tmp_path):
     assert raw["version"] == 2
     assert raw["identities"]["cc"][0]["owner"] == "cc"
     assert raw["identities"]["keke"][0]["owner"] == "keke"
+    assert reloaded.identities() == ["cc", "keke"]
 
 
 def test_desire_update_cannot_cross_identity(tmp_path):
