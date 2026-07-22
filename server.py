@@ -51,6 +51,7 @@ from dehydrator import Dehydrator
 from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
 from desire_engine import DesireEngine
+from memory_context import feel_temporal_lens
 from identity_scope import can_access as identity_can_access
 from import_memory import ImportEngine
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, is_internalized, is_protected, is_highlighted
@@ -601,11 +602,19 @@ async def breath(
             results = []
             for f in feels:
                 created = f["metadata"].get("created", "")
-                entry = f"[{created}] [bucket_id:{f['id']}]\n{strip_wikilinks(f['content'])}"
+                entry = (
+                    f"[{created}] [bucket_id:{f['id']}]\n"
+                    f"{feel_temporal_lens(created)}\n"
+                    f"{strip_wikilinks(f['content'])}"
+                )
                 results.append(entry)
                 if count_tokens_approx("\n---\n".join(results)) > max_tokens:
                     break
-            return "=== 你留下的 feel ===\n" + "\n---\n".join(results)
+            return (
+                "=== 你留下的 feel ===\n"
+                "[阅读规则] 以下内容记录的是当时的主观感受，不是当前状态指令。\n"
+                + "\n---\n".join(results)
+            )
         except Exception as e:
             logger.error(f"Feel retrieval failed: {e}")
             return "读取 feel 失败。"

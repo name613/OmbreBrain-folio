@@ -2,10 +2,12 @@ import json
 import asyncio
 
 import pytest
+from datetime import datetime, timezone
 
 from desire_engine import DesireEngine
 from identity_scope import can_access
 from bucket_manager import BucketManager
+from memory_context import feel_temporal_lens
 
 
 def test_named_identity_owner_is_private_even_when_key_is_removed():
@@ -41,6 +43,9 @@ def test_desires_are_identity_scoped_and_persist(tmp_path):
 
     raw = json.loads((tmp_path / "desires.json").read_text(encoding="utf-8"))
     assert set(raw["identities"]) == {"cc", "keke"}
+    assert raw["version"] == 2
+    assert raw["identities"]["cc"][0]["owner"] == "cc"
+    assert raw["identities"]["keke"][0]["owner"] == "keke"
 
 
 def test_desire_update_cannot_cross_identity(tmp_path):
@@ -48,6 +53,44 @@ def test_desire_update_cannot_cross_identity(tmp_path):
     item = engine.upsert("keke", "私有牵引")
     with pytest.raises(KeyError):
         engine.set_status("cc", item["id"], "released")
+
+
+def test_desire_row_owner_is_a_second_isolation_boundary(tmp_path):
+    path = tmp_path / "desires.json"
+    path.write_text(json.dumps({
+        "version": 2,
+        "identities": {
+            "cc": [{"id": "wrong-owner", "owner": "keke", "title": "不该被 cc 读取"}],
+        },
+    }), encoding="utf-8")
+    engine = DesireEngine(str(tmp_path))
+    assert engine.list("cc", include_closed=True) == []
+    with pytest.raises(KeyError):
+        engine.set_status("cc", "wrong-owner", "released")
+
+
+def test_legacy_desire_without_owner_inherits_its_identity_partition(tmp_path):
+    path = tmp_path / "desires.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "identities": {
+            "cc": [{"id": "legacy", "title": "旧牵引", "status": "active"}],
+        },
+    }), encoding="utf-8")
+    engine = DesireEngine(str(tmp_path))
+    assert engine.list("cc")[0]["owner"] == "cc"
+    updated = engine.set_status("cc", "legacy", "paused")
+    assert updated["owner"] == "cc"
+
+
+def test_feel_temporal_lens_marks_old_state_as_evidence_not_current_emotion():
+    lens = feel_temporal_lens(
+        "2026-07-19T08:00:00+00:00",
+        now=datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),
+    )
+    assert "3 天前记录" in lens
+    assert "不等于此刻情绪" in lens
+    assert "不要直接续写当时状态" in lens
 
 
 def test_memory_kind_intent_reranks_tool_facts_above_reflection():

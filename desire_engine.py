@@ -23,9 +23,9 @@ class DesireEngine:
         try:
             with open(self.path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
-            return data if isinstance(data, dict) else {"version": 1, "identities": {}}
+            return data if isinstance(data, dict) else {"version": 2, "identities": {}}
         except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return {"version": 1, "identities": {}}
+            return {"version": 2, "identities": {}}
 
     def _write(self, data: dict) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -42,7 +42,15 @@ class DesireEngine:
 
     def list(self, identity: str, include_closed: bool = False) -> list[dict]:
         with self._lock:
-            items = list(self._read().get("identities", {}).get(identity, []))
+            items = [
+                dict(item)
+                for item in self._read().get("identities", {}).get(identity, [])
+                if item.get("owner", identity) == identity
+            ]
+        # Version 1 records had no row-level owner. Infer it from their identity
+        # partition when reading so callers always receive an explicit owner.
+        for item in items:
+            item.setdefault("owner", identity)
         if not include_closed:
             items = [item for item in items if item.get("status", "active") in {"active", "paused"}]
         return sorted(
@@ -76,13 +84,18 @@ class DesireEngine:
         now = _now()
         with self._lock:
             data = self._read()
+            data["version"] = 2
             identities = data.setdefault("identities", {})
             items = identities.setdefault(identity, [])
-            item = next((row for row in items if row.get("id") == desire_id), None)
+            matching_id = next((row for row in items if row.get("id") == desire_id), None)
+            if matching_id is not None and matching_id.get("owner", identity) != identity:
+                raise KeyError(desire_id)
+            item = matching_id
             if item is None:
-                item = {"id": uuid.uuid4().hex[:12], "created": now}
+                item = {"id": uuid.uuid4().hex[:12], "created": now, "owner": identity}
                 items.append(item)
             item.update({
+                "owner": identity,
                 "title": title[:160],
                 "why": str(why or "").strip()[:1000],
                 "tension": max(0.0, min(1.0, float(tension))),
@@ -101,9 +114,14 @@ class DesireEngine:
         with self._lock:
             data = self._read()
             items = data.get("identities", {}).get(identity, [])
-            item = next((row for row in items if row.get("id") == desire_id), None)
+            item = next(
+                (row for row in items if row.get("id") == desire_id and row.get("owner", identity) == identity),
+                None,
+            )
             if item is None:
                 raise KeyError(desire_id)
+            data["version"] = 2
+            item["owner"] = identity
             item["status"] = status
             if progress:
                 item["progress"] = str(progress).strip()[:1000]
@@ -115,9 +133,13 @@ class DesireEngine:
         with self._lock:
             data = self._read()
             items = data.get("identities", {}).get(identity, [])
-            kept = [row for row in items if row.get("id") != desire_id]
+            kept = [
+                row for row in items
+                if not (row.get("id") == desire_id and row.get("owner", identity) == identity)
+            ]
             if len(kept) == len(items):
                 return False
+            data["version"] = 2
             data["identities"][identity] = kept
             self._write(data)
             return True

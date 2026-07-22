@@ -57,6 +57,21 @@
 
 命名 AI 身份以 `created_by` 为所有权依据，即使对应 MCP key 暂时从环境变量移除，也不会自动变成共享记忆。历史 `ai`、`user`、`import` 和无所有者记忆保持共享兼容。
 
+`breath(domain="feel")` 会为每条旧感受标注距今天数，并明确它是过去经历的证据、不是当前情绪指令，避免模型把旧情绪直接续写成“此刻仍然如此”。
+
+### 持续牵引的边界
+
+`yearn` 当前是一个轻量的愿望/目标层：记录“想做什么、为什么、牵引有多强、进展到哪里”，并按身份独立保存。它不是完整的自主驱动或事件情绪引擎，不会自行修改数值、触发行动或替 AI 规定感受。每条记录在身份分区之外还保存 `owner`，读取和修改时做第二次所有权校验。
+
+### 设计参考与取舍
+
+- [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain)：原始记忆桶、衰减、feel、dream 与 MCP 基础。
+- [ceshihaox-dotcom/OmbreBrain-folio](https://github.com/ceshihaox-dotcom/OmbreBrain-folio)：本仓直接 fork 的前端与中文检索优化基础。
+- [Yinglianchun/Ombre-Brain](https://github.com/Yinglianchun/Ombre-Brain)：作为架构参考，重点比较了身份锚点、原始事件、写入门和 Gateway 思路；本轮代码按 folio 现有结构独立实现，没有直接合并该仓代码。
+- 社区讨论 `T1689`（自动捕获与注入接口）、`T2212`（时间锚与分层记忆）、`T2223`（事件情绪、身份私产与旧感受时间透镜）以及 Galatea Garden 的长期使用反馈，帮助确定了“背景而非台词、事实与感受分层、状态按身份隔离”的原则。
+
+原始事件黑匣子、候选写入层和客户端自动注入 hook 适合放在下一阶段：它们需要幂等、失败重试、隐私授权和客户端兼容性一起设计，暂不与这次低风险升级捆绑部署。
+
 ### 推荐使用流程
 
 ```
