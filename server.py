@@ -1136,7 +1136,7 @@ async def yearn(
         if action == "list":
             items = desire_engine.list(identity, include_closed=include_closed)
             if not items:
-                return "当前没有持续牵引。"
+                return f"当前身份: {identity}\n当前没有持续牵引。"
             lines = []
             for item in items:
                 detail = f" | 进展: {item['progress']}" if item.get("progress") else ""
@@ -1145,7 +1145,7 @@ async def yearn(
                     f"| 牵引 {float(item.get('tension', 0.5)):.1f} "
                     f"| 优先级 {item.get('priority', 5)}{detail}"
                 )
-            return "=== 当前牵引 ===\n" + "\n".join(lines)
+            return f"=== {identity} 的当前牵引 ===\n" + "\n".join(lines)
         if action == "upsert":
             item = desire_engine.upsert(
                 identity=identity, title=title, why=why, desire_id=desire_id,
@@ -1174,8 +1174,10 @@ async def pulse(include_archive: bool = False) -> str:
     except Exception as e:
         return f"获取系统状态失败: {e}"
 
+    identity = _mcp_identity.get()
     status = (
         f"=== Ombre Brain 记忆系统 ===\n"
+        f"当前身份: {identity}\n"
         f"固化记忆桶: {stats['permanent_count']} 个\n"
         f"动态记忆桶: {stats['dynamic_count']} 个\n"
         f"归档记忆桶: {stats['archive_count']} 个\n"
@@ -1186,6 +1188,10 @@ async def pulse(include_archive: bool = False) -> str:
     # --- List all bucket summaries / 列出所有桶摘要 ---
     try:
         buckets = await bucket_mgr.list_all(include_archive=include_archive)
+        buckets = [
+            bucket for bucket in buckets
+            if _identity_can_access(bucket.get("metadata", {}), identity)
+        ]
     except Exception as e:
         return status + f"\n列出记忆桶失败: {e}"
 
@@ -1252,7 +1258,8 @@ async def dream() -> str:
     # noise = resolved + importance=1, 用户软删除标记, 不应该被 AI dream 翻出来
     candidates = [
         b for b in all_buckets
-        if b["metadata"].get("type") not in ("permanent", "feel")
+        if _identity_can_access(b.get("metadata", {}), _mcp_identity.get())
+        and b["metadata"].get("type") not in ("permanent", "feel")
         and not b["metadata"].get("pinned", False)
         and not b["metadata"].get("protected", False)
         and not (b["metadata"].get("resolved", False) and b["metadata"].get("importance", 5) == 1)
@@ -1979,6 +1986,42 @@ async def api_config_test(request):
 # Dashboard API endpoints (for lightweight Web UI)
 # 仪表板 API（轻量 Web UI 用）
 # =============================================================
+def _desire_identity_names() -> list[str]:
+    """Identity labels visible to the authenticated dashboard; never return keys."""
+    configured = list(dict.fromkeys(_parse_mcp_keys().values()))
+    persisted = desire_engine.identities()
+    names = configured + [name for name in persisted if name not in configured]
+    if not names and os.environ.get("OMBRE_MCP_URL_KEY", "").strip():
+        names.append("ai")
+    return names
+
+
+@mcp.custom_route("/api/desires", methods=["GET"])
+async def api_desires_get(request):
+    """List one identity's drives for the authenticated review UI."""
+    from starlette.responses import JSONResponse
+
+    names = _desire_identity_names()
+    identity = (request.query_params.get("identity") or (names[0] if names else "")).strip()
+    if not identity or identity not in names:
+        return JSONResponse({"error": "unknown identity"}, status_code=404)
+    include_closed = request.query_params.get("include_closed", "0").lower() in {"1", "true", "yes"}
+    identities = []
+    for name in names:
+        active = desire_engine.list(name)
+        all_items = desire_engine.list(name, include_closed=True)
+        identities.append({
+            "name": name,
+            "active_count": len(active),
+            "total_count": len(all_items),
+        })
+    return JSONResponse({
+        "identity": identity,
+        "identities": identities,
+        "items": desire_engine.list(identity, include_closed=include_closed),
+    })
+
+
 @mcp.custom_route("/api/buckets", methods=["GET"])
 async def api_buckets(request):
     """List all buckets with metadata (no content for efficiency).
