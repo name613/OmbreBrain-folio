@@ -37,6 +37,7 @@ function ConsoleNav({ active, trashCount = 0 }) {
     { id: 'cells',     label: '记忆格',     href: '/v2/cells/' },
     { id: 'timeline',  label: '时间线',     href: '/v2/' },
     { id: 'star',      label: '记忆星图',   href: '/v2/network/' },
+    { id: 'desires',   label: '牵引',       href: '/v2/mobile/#/setting/desires' },
     { id: 'import',    label: '导入',       href: '/v2/console/import/' },
     { id: 'breath',    label: 'Breath 模拟', href: '/v2/console/breath/' },
     { id: 'config',    label: '配置',       href: '/v2/console/config/' },
