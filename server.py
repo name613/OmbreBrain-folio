@@ -50,6 +50,8 @@ from bucket_manager import BucketManager
 from dehydrator import Dehydrator
 from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
+from desire_engine import DesireEngine
+from identity_scope import can_access as identity_can_access
 from import_memory import ImportEngine
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, is_internalized, is_protected, is_highlighted
 
@@ -64,6 +66,7 @@ dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 embedding_engine = EmbeddingEngine(config)            # Embedding engine / 向量化引擎
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
+desire_engine = DesireEngine(config["buckets_dir"])
 
 # --- /api/buckets in-memory cache / 内存级缓存 ---
 # 每个视图(cells/network/console/mobile)启动都自己拉一遍 /api/buckets,
@@ -94,6 +97,12 @@ def _parse_mcp_keys() -> dict:
             k, v = pair.split(":", 1)
             result[k.strip()] = v.strip()
     return result
+
+
+def _identity_can_access(metadata: dict, caller: str = None) -> bool:
+    """Keep identities isolated while leaving legacy shared memories readable."""
+    caller = caller or _mcp_identity.get()
+    return identity_can_access(metadata, caller, set(_parse_mcp_keys().values()))
 
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
@@ -278,6 +287,8 @@ async def _merge_or_create(
     name: str = "",
     event_time: str = None,
     created_by: str = None,
+    memory_kind: str = None,
+    subject: str = None,
 ) -> tuple[str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -289,7 +300,12 @@ async def _merge_or_create(
     # 合并不稳: 打分被调高(precise/boosts)后会误合并不相干记忆 → 个人实例可关掉改手动去重。
     try:
         existing = (
-            await bucket_mgr.search(content, limit=1, domain_filter=domain or None)
+            await bucket_mgr.search(
+                content,
+                limit=1,
+                domain_filter=domain or None,
+                memory_kinds=[memory_kind] if memory_kind else None,
+            )
             if config.get("auto_merge", True) else []
         )
     except Exception as e:
@@ -319,6 +335,10 @@ async def _merge_or_create(
                     valence=merged_valence,
                     arousal=merged_arousal,
                 )
+                if memory_kind:
+                    update_kwargs["memory_kind"] = memory_kind
+                if subject:
+                    update_kwargs["subject"] = subject
                 # 合并时若调用方明确传了 event_time,跟随更新(用更近的事件时间);
                 # 没传就保持旧 event_time 不动
                 if event_time is not None:
@@ -343,6 +363,8 @@ async def _merge_or_create(
         name=name or None,
         event_time=event_time,
         created_by=created_by,
+        memory_kind=memory_kind,
+        subject=subject,
     )
     # --- Generate embedding for new bucket ---
     try:
@@ -369,8 +391,9 @@ async def breath(
     valence: float = -1,
     arousal: float = -1,
     max_results: int = 20,
+    memory_kind: str = "",
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。memory_kind可逗号指定 fact/procedure/commitment/preference/relationship/episode/reflection/desire，查工具与配置时推荐 fact,procedure。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -379,9 +402,9 @@ async def breath(
     # Buckets tagged with any OTHER known identity are excluded.
     _caller = _mcp_identity.get()
     _all_identities = set(_parse_mcp_keys().values())
-    _all_identities.discard(_caller)  # don't exclude caller's own tag
-    _all_identities.discard("ai")     # old default memories are visible to all
-    _exclude_tags = _all_identities   # set of tags that belong to other identities
+    _all_identities.discard(_caller)
+    _all_identities.discard("ai")
+    _exclude_tags = _all_identities
 
     # --- No args or empty query: surfacing mode (weight pool active push) ---
     # --- 无参数或空query：浮现模式（权重池主动推送）---
@@ -391,8 +414,7 @@ async def breath(
         except Exception as e:
             logger.error(f"Failed to list buckets for surfacing / 浮现列桶失败: {e}")
             return "记忆系统暂时无法访问。"
-        if _exclude_tags:
-            all_buckets = [b for b in all_buckets if not (_exclude_tags & set(b["metadata"].get("tags", [])))]
+        all_buckets = [b for b in all_buckets if _identity_can_access(b.get("metadata", {}), _caller)]
 
         # --- Highlighted buckets: always surface as core principles ---
         # --- 置顶桶(highlight=True):作为核心准则始终浮现(已内化的隐藏) ---
@@ -548,6 +570,16 @@ async def breath(
             return "权重池平静，没有需要处理的记忆。"
 
         parts = []
+        active_desires = desire_engine.list(_caller)
+        if active_desires:
+            drive_lines = []
+            for item in active_desires[:3]:
+                detail = f" - {item['progress']}" if item.get("progress") else ""
+                drive_lines.append(
+                    f"[{item['id']}] {item['title']} "
+                    f"(牵引 {float(item.get('tension', 0.5)):.1f}, 优先级 {item.get('priority', 5)}){detail}"
+                )
+            parts.append("=== 当前牵引 ===\n" + "\n".join(drive_lines))
         if pinned_results:
             parts.append("=== 核心准则 ===\n" + "\n---\n".join(pinned_results))
         if protected_results:
@@ -561,8 +593,7 @@ async def breath(
     if domain.strip().lower() == "feel":
         try:
             all_buckets = await bucket_mgr.list_all(include_archive=False)
-            if _exclude_tags:
-                all_buckets = [b for b in all_buckets if not (_exclude_tags & set(b["metadata"].get("tags", [])))]
+            all_buckets = [b for b in all_buckets if _identity_can_access(b.get("metadata", {}), _caller)]
             feels = [b for b in all_buckets if b["metadata"].get("type") == "feel"]
             feels.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
             if not feels:
@@ -582,6 +613,7 @@ async def breath(
     # --- With args: search mode (keyword + vector dual channel) ---
     # --- 有参数：检索模式（关键词 + 向量双通道）---
     domain_filter = [d.strip() for d in domain.split(",") if d.strip()] or None
+    kind_filter = [k.strip().lower() for k in memory_kind.split(",") if k.strip()] or None
     q_valence = valence if 0 <= valence <= 1 else None
     q_arousal = arousal if 0 <= arousal <= 1 else None
 
@@ -592,6 +624,7 @@ async def breath(
             domain_filter=domain_filter,
             query_valence=q_valence,
             query_arousal=q_arousal,
+            memory_kinds=kind_filter,
         )
     except Exception as e:
         logger.error(f"Search failed / 检索失败: {e}")
@@ -614,7 +647,7 @@ async def breath(
                if not (is_internalized(b["metadata"])
                        or _is_noise(b["metadata"])
                        or b["metadata"].get("type") == "feel")
-               and not (_exclude_tags and (_exclude_tags & set(b["metadata"].get("tags", []))))]
+               and _identity_can_access(b.get("metadata", {}), _caller)]
 
     # --- Vector similarity channel: find semantically related buckets ---
     # --- 向量相似度通道：找到语义相关的桶 ---
@@ -628,13 +661,19 @@ async def breath(
                 #   "模糊命中占记忆位"。它们已在开窗核心准则/永久参考区读取; title 强命中的情况
                 #   已由上面关键词通道 (search()) 收进 matches, 这里只补"keyword 没命中但语义相近"
                 #   的桶, 它们不该靠这条旁路混入。
-                if bucket and not (is_internalized(bucket["metadata"])
+                if bucket and not ((kind_filter and str(bucket["metadata"].get("memory_kind", "")).lower() not in kind_filter)
+                                   or is_internalized(bucket["metadata"])
                                    or is_highlighted(bucket["metadata"])
                                    or is_protected(bucket["metadata"])
                                    or _is_noise(bucket["metadata"])
                                    or bucket["metadata"].get("type") == "feel"
-                                   or (_exclude_tags and (_exclude_tags & set(bucket["metadata"].get("tags", []))))):
-                    bucket["score"] = round(sim_score * 100, 2)
+                                   or not _identity_can_access(bucket.get("metadata", {}), _caller)):
+                    kind_multiplier = bucket_mgr.kind_multiplier(query, bucket.get("metadata", {}))
+                    # For clearly technical lookup, reflection-only semantic neighbors
+                    # are noise rather than useful fallbacks.
+                    if kind_multiplier < 0.7:
+                        continue
+                    bucket["score"] = round(sim_score * 100 * kind_multiplier, 2)
                     bucket["vector_match"] = True
                     matches.append(bucket)
                     matched_ids.add(bucket_id)
@@ -681,6 +720,7 @@ async def breath(
                 and decay_engine.calculate_score(b["metadata"]) < 2.0
                 and not is_internalized(b["metadata"])
                 and b["metadata"].get("type") != "feel"
+                and _identity_can_access(b.get("metadata", {}), _caller)
             ]
             if low_weight:
                 drifted = random.sample(low_weight, min(random.randint(1, 3), len(low_weight)))
@@ -713,8 +753,10 @@ async def hold(
     source_bucket: str = "",    valence: float = -1,
     arousal: float = -1,
     event_time: str = "",
+    memory_kind: str = "",
+    subject: str = "",
 ) -> str:
-    """存储单条记忆——对话里出现值得跨对话记住的事实/事件/约定就主动调用(别等用户开口要)。自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被你内化的记忆桶ID(feel模式下,标记源记忆为已内化,从此不再浮现)。event_time=事件实际发生时间(YYYY-MM-DD 或 ISO 时间戳),不传默认就是现在。当用户提到的事件不是发生在现在时(如"上周末""昨晚""三月那次"),应当传 event_time 而非默认。"""
+    """存储单条记忆。memory_kind可显式指定 fact/procedure/commitment/preference/relationship/episode/reflection/desire，留空自动判断；subject是主要人物/项目/对象。feel=True仍走独立私密感受层。"""
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
@@ -773,6 +815,8 @@ async def hold(
     arousal = analysis["arousal"]
     auto_tags = analysis["tags"]
     suggested_name = analysis.get("suggested_name", "")
+    chosen_kind = (memory_kind or analysis.get("memory_kind", "episode")).strip().lower()
+    chosen_subject = (subject or analysis.get("subject", "")).strip()
 
     identity_tag = [creator] if creator else []
     all_tags = list(dict.fromkeys(auto_tags + extra_tags + identity_tag))
@@ -792,6 +836,8 @@ async def hold(
             pinned=True,
             event_time=event_time,
             created_by=creator,
+            memory_kind=chosen_kind,
+            subject=chosen_subject,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
@@ -810,6 +856,8 @@ async def hold(
         name=suggested_name,
         event_time=event_time or None,
         created_by=creator,
+        memory_kind=chosen_kind,
+        subject=chosen_subject,
     )
 
     action = "合并→" if is_merged else "新建→"
@@ -855,6 +903,8 @@ async def grow(content: str, event_time: str = "") -> str:
             name=analysis.get("suggested_name", ""),
             event_time=event_time or None,
             created_by=creator,
+            memory_kind=analysis.get("memory_kind", "episode"),
+            subject=analysis.get("subject", ""),
         )
         action = "合并" if is_merged else "新建"
         return f"{action} → {result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
@@ -907,6 +957,8 @@ async def grow(content: str, event_time: str = "") -> str:
                 name=item.get("name", ""),
                 event_time=event_time or None,
                 created_by=creator,
+                memory_kind=item.get("memory_kind", "episode"),
+                subject=item.get("subject", ""),
             )
 
             if is_merged:
@@ -947,6 +999,8 @@ async def trace(
     internalized: int = -1,
     digested: int = -1,  # 老字段名,兼容历史调用方,语义同 internalized
     event_time: str = "",
+    memory_kind: str = "",
+    subject: str = "",
     content: str = "",
     delete: bool = False,
 ) -> str:
@@ -988,6 +1042,10 @@ async def trace(
         updates["importance"] = importance
     if tags:
         updates["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+    if memory_kind:
+        updates["memory_kind"] = memory_kind
+    if subject:
+        updates["subject"] = subject
     if resolved in (0, 1):
         updates["resolved"] = bool(resolved)
     # protected/highlight 是新字段,pinned 是老组合别名(=两个都设)
@@ -1047,8 +1105,57 @@ async def trace(
 
 
 # =============================================================
-# Tool 5: pulse — Heartbeat, system status + memory listing
-# 工具 5：pulse — 脉搏，系统状态 + 记忆列表
+# Tool 5: yearn — identity-scoped persistent drives
+# 工具 5：yearn — 独立于记忆检索的持续牵引
+# =============================================================
+@mcp.tool()
+async def yearn(
+    action: str = "list",
+    title: str = "",
+    desire_id: str = "",
+    why: str = "",
+    tension: float = 0.5,
+    priority: int = 5,
+    progress: str = "",
+    status: str = "active",
+    include_closed: bool = False,
+) -> str:
+    """管理当前身份的持续愿望。action=list/upsert/status/remove；愿望与普通记忆分开存储，不参与向量检索。tension 0~1 表示当前牵引强度，priority 1~10 表示长期重要度。"""
+    identity = _mcp_identity.get()
+    action = (action or "list").strip().lower()
+    try:
+        if action == "list":
+            items = desire_engine.list(identity, include_closed=include_closed)
+            if not items:
+                return "当前没有持续牵引。"
+            lines = []
+            for item in items:
+                detail = f" | 进展: {item['progress']}" if item.get("progress") else ""
+                lines.append(
+                    f"[{item['id']}] {item['title']} | {item.get('status', 'active')} "
+                    f"| 牵引 {float(item.get('tension', 0.5)):.1f} "
+                    f"| 优先级 {item.get('priority', 5)}{detail}"
+                )
+            return "=== 当前牵引 ===\n" + "\n".join(lines)
+        if action == "upsert":
+            item = desire_engine.upsert(
+                identity=identity, title=title, why=why, desire_id=desire_id,
+                tension=tension, priority=priority, progress=progress, status=status,
+            )
+            return f"已保存牵引 [{item['id']}] {item['title']}"
+        if action == "status":
+            item = desire_engine.set_status(identity, desire_id, status, progress)
+            return f"已更新牵引 [{item['id']}] → {item['status']}"
+        if action == "remove":
+            return "已删除牵引。" if desire_engine.remove(identity, desire_id) else "没有找到这个牵引。"
+        return "未知 action；可用 list/upsert/status/remove。"
+    except (ValueError, KeyError) as exc:
+        return f"牵引更新失败: {exc}"
+
+
+# =============================================================
+# Tool 6: pulse — Heartbeat, system status + memory listing
+# 工具 6：pulse — 脉搏，系统状态 + 记忆列表
 # =============================================================
 @mcp.tool()
 async def pulse(include_archive: bool = False) -> str:
@@ -1897,6 +2004,8 @@ async def api_buckets(request):
                 "digested": is_internalized(meta),  # 兼容旧前端
                 "event_time": meta.get("event_time", ""),
                 "created_by": meta.get("created_by", "ai"),  # 默认 ai,dashboard 手动新建会标 user
+                "memory_kind": meta.get("memory_kind", ""),
+                "subject": meta.get("subject", ""),
                 "created": meta.get("created", ""),
                 "last_active": meta.get("last_active", ""),
                 "activation_count": meta.get("activation_count", 1),
@@ -1959,6 +2068,7 @@ async def api_bucket_update(request):
         "summary",  # 用户可编辑的摘要(v2 modal),为空时回退到 content_preview
         "raw_source",  # 用户可手动补全/修订的原文片段(详情 modal 原文浮层编辑入口)
         "created_by",  # 来源分类 user/ai/import (历史 ai 桶可手动改成 import 等)
+        "memory_kind", "subject",
     }
     updates = {k: v for k, v in body.items() if k in allowed}
     if not updates:
@@ -2866,6 +2976,8 @@ async def api_bucket_create(request):
     highlight = bool(body.get("highlight", False))
     internalized = bool(body.get("internalized", False))
     summary = body.get("summary") or None  # 用户在 WriteDrawer 填的"一句话摘要", 漏接 → 写一条记忆摘要永远存不下来
+    memory_kind = body.get("memory_kind") or None
+    subject = body.get("subject") or None
     # type 字段 — 用户在 WriteDrawer 切 feel 时前端传 type='feel'
     # 默认 'dynamic', 合法值: dynamic / feel / permanent
     bucket_type = body.get("type", "dynamic")
@@ -2887,6 +2999,8 @@ async def api_bucket_create(request):
             bucket_type=bucket_type,  # feel 切换时这里写入 metadata.type='feel'
             created_by="user",  # dashboard 手动新建标记,跟 AI 写入区分
             summary=summary,
+            memory_kind=memory_kind,
+            subject=subject,
         )
     except Exception as e:
         return JSONResponse({"error": f"create failed: {e}"}, status_code=500)

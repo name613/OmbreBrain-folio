@@ -243,7 +243,12 @@ ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出
    第二步—引申扩展：自动补充 8~10 个与当前场景语义相关的词，包括近义词、上位词、关联场景词、用户可能用不同措辞搜索的词
    两步合并为一个 tags 数组，总计 10~15 个
 5. suggested_name（建议桶名）：10字以内的简短标题
-6. 在 tags 和 suggested_name 中不要使用 [[]] 双链标记
+6. memory_kind（记忆类型）：只能从以下值选择一个：
+   fact=可核对事实，procedure=工具/配置/操作方法，commitment=约定/待办，
+   preference=稳定偏好，relationship=关系与共同经历，episode=一般事件，
+   reflection=感受/理解/反思，desire=尚未完成的愿望或持续牵引
+7. subject（检索主体）：这条记忆主要在说谁/什么，20字以内，尽量用明确人名、项目名或对象名
+8. 在 tags、suggested_name 和 subject 中不要使用 [[]] 双链标记
 
 输出格式（纯 JSON，无其他内容）：
 {
@@ -251,7 +256,9 @@ ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出
   "valence": 0.7,
   "arousal": 0.4,
   "tags": ["核心词1", "核心词2", "扩展词1", "扩展词2", "..."],
-  "suggested_name": "简短标题"
+  "suggested_name": "简短标题",
+  "memory_kind": "fact",
+  "subject": "明确主体"
 }"""
 
 
@@ -671,7 +678,7 @@ class Dehydrator:
         Analyze content and return structured metadata.
         分析内容，返回结构化元数据。
 
-        Returns: {"domain", "valence", "arousal", "tags", "suggested_name"}
+        Returns: {"domain", "valence", "arousal", "tags", "suggested_name", "memory_kind", "subject"}
         """
         if not content or not content.strip():
             return self._default_analysis()
@@ -745,12 +752,22 @@ class Dehydrator:
         except (ValueError, TypeError):
             valence, arousal = 0.5, 0.3
 
+        valid_kinds = {
+            "fact", "procedure", "commitment", "preference", "relationship",
+            "episode", "reflection", "desire",
+        }
+        memory_kind = str(result.get("memory_kind", "episode")).strip().lower()
+        if memory_kind not in valid_kinds:
+            memory_kind = "episode"
+
         return {
             "domain": result.get("domain", ["未分类"])[:3],
             "valence": valence,
             "arousal": arousal,
             "tags": result.get("tags", [])[:15],
             "suggested_name": str(result.get("suggested_name", ""))[:20],
+            "memory_kind": memory_kind,
+            "subject": str(result.get("subject", "")).strip()[:120],
         }
 
     # ---------------------------------------------------------
@@ -768,6 +785,8 @@ class Dehydrator:
             "arousal": 0.3,
             "tags": [],
             "suggested_name": "",
+            "memory_kind": "episode",
+            "subject": "",
         }
 
     # ---------------------------------------------------------

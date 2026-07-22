@@ -55,6 +55,18 @@ function useRoute() {
 
 const MO_EN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const WK_EN = ['sun','mon','tue','wed','thu','fri','sat'];
+const MEMORY_KINDS = [
+  ['fact', '事实'], ['procedure', '方法'], ['commitment', '约定'],
+  ['preference', '偏好'], ['relationship', '关系'], ['episode', '事件'],
+  ['reflection', '反思'], ['desire', '愿望'],
+];
+
+function creatorLabel(value) {
+  if (value === 'import') return '导入';
+  if (value === 'user') return '亲手写';
+  if (!value || value === 'ai') return '旧 AI';
+  return value;
+}
 
 function bucketDate(b) {
   // 优先 event_time(用户/AI 设置的实际发生时间),否则 created
@@ -114,6 +126,7 @@ function matchedFields(b, q) {
   if ((b.name || '').toLowerCase().includes(ql)) out.push('标题');
   if ((b.summary || '').toLowerCase().includes(ql)) out.push('摘要');
   if ((b.content_preview || '').toLowerCase().includes(ql)) out.push('正文');
+  if ((b.subject || '').toLowerCase().includes(ql)) out.push('主体');
   const visTags = (b.tags || []).filter(t => !String(t).startsWith('__'));
   if (visTags.some(t => String(t).toLowerCase().includes(ql))) out.push('标签');
   return out;
@@ -280,9 +293,15 @@ function HomeScreen() {
     if (filters.has('internal')) result = result.filter(b => b.internalized || b.digested);
     if (filters.has('cold'))     result = result.filter(b => (b.score || 0) < 1.5);  // 对齐电脑端: 按衰减 score<1.5, 不是 importance<2
     // 来源过滤 — 三态多选 (OR), 缺 created_by 的老桶按 'ai' 计 (跟后端 list 端点 default 一致)
-    const srcFilters = ['user', 'ai', 'import'].filter(s => filters.has('src-' + s));
+    const srcFilters = Array.from(filters)
+      .filter(key => key.startsWith('src-'))
+      .map(key => key.slice(4));
     if (srcFilters.length > 0) {
       result = result.filter(b => srcFilters.includes(b.created_by || 'ai'));
+    }
+    const kindFilters = MEMORY_KINDS.map(([key]) => key).filter(k => filters.has('kind-' + k));
+    if (kindFilters.length > 0) {
+      result = result.filter(b => kindFilters.includes(b.memory_kind || ''));
     }
     if (domainFilters.length > 0) {
       result = result.filter(b => domainFilters.every(d => (b.domain || []).includes(d)));
@@ -295,7 +314,7 @@ function HomeScreen() {
     if (q) {
       result = result.filter(b => {
         const visTags = (b.tags || []).filter(t => !String(t).startsWith('__')).join(' ');
-        const hay = ((b.name || '') + ' ' + (b.summary || '') + ' ' + (b.content_preview || '') + ' ' + visTags).toLowerCase();
+        const hay = ((b.name || '') + ' ' + (b.subject || '') + ' ' + (b.summary || '') + ' ' + (b.content_preview || '') + ' ' + visTags).toLowerCase();
         return hay.indexOf(q) >= 0;
       });
     }
@@ -323,6 +342,12 @@ function HomeScreen() {
       });
     });
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t, c]) => ({ tag: t, count: c }));
+  }, [buckets]);
+
+  const allCreators = useMemo(() => {
+    if (!buckets) return [];
+    return Array.from(new Set(buckets.map(b => b.created_by || 'ai')))
+      .sort((a, b) => creatorLabel(a).localeCompare(creatorLabel(b), 'zh-CN'));
   }, [buckets]);
 
   const toggleDomain = (d) => setDomainFilters(curr => curr.includes(d) ? curr.filter(x => x !== d) : [...curr, d]);
@@ -441,20 +466,6 @@ function HomeScreen() {
             className={'home-chip feel' + (filters.has('feel') ? ' on' : '')}
             onClick={() => toggleFilter('feel')}
           >♡ Feel</span>
-          {/* 来源三态 chip — 多选 (OR). 替代旧的 "我写的" 单态.
-              改造前 'ai' 混了导入跟 AI 主动写, 改后 import 单独成态 */}
-          <span
-            className={'home-chip' + (filters.has('src-import') ? ' on' : '')}
-            onClick={() => toggleFilter('src-import')}
-          >导入</span>
-          <span
-            className={'home-chip' + (filters.has('src-ai') ? ' on' : '')}
-            onClick={() => toggleFilter('src-ai')}
-          >AI 写入</span>
-          <span
-            className={'home-chip' + (filters.has('src-user') ? ' on' : '')}
-            onClick={() => toggleFilter('src-user')}
-          >亲手写</span>
           {/* 已消化/待消化/已归档 = 低频沉淀状态 (2026-06-07 对齐电脑端: 删噪声 chip → 噪声桶沉底自动归档; 加已归档档) */}
           <span
             className={'home-chip' + (filters.has('internal') ? ' on' : '')}
@@ -474,6 +485,32 @@ function HomeScreen() {
             onClick={() => setTagSheetOpen(true)}
             title={`${allTags.length} 个标签可筛选`}
           >🏷 标签{tagFilters.length > 0 ? ` ·${tagFilters.length}` : ''}</span>
+        </div>
+
+        <div className="home-domains">
+          <span className="home-domains-lab">记忆类型</span>
+          <div className="home-domains-row">
+            {MEMORY_KINDS.map(([key, label]) => (
+              <span
+                key={key}
+                className={'home-chip domain' + (filters.has('kind-' + key) ? ' on' : '')}
+                onClick={() => toggleFilter('kind-' + key)}
+              >{label}</span>
+            ))}
+          </div>
+        </div>
+
+        <div className="home-domains">
+          <span className="home-domains-lab">身份</span>
+          <div className="home-domains-row">
+            {allCreators.map(creator => (
+              <span
+                key={creator}
+                className={'home-chip domain' + (filters.has('src-' + creator) ? ' on' : '')}
+                onClick={() => toggleFilter('src-' + creator)}
+              >{creatorLabel(creator)}</span>
+            ))}
+          </div>
         </div>
 
         {/* 主题域筛选行 — 上游 dashboard domain filter 的 mobile 实现 */}
@@ -1161,7 +1198,7 @@ function MemFullScreen({ id }) {
           {dayFmt && <span>{dayFmt.num} {dayFmt.mo} {dayFmt.year}</span>}
           {time && <><span>·</span><span><b>{time}</b></span></>}
           <span>·</span>
-          <span>{m.created_by === 'import' ? '导入' : m.created_by === 'user' ? '亲手写' : 'AI 写入'}</span>
+          <span>{creatorLabel(m.created_by)}</span>
         </div>
       </div>
 
@@ -1170,10 +1207,12 @@ function MemFullScreen({ id }) {
           {m.highlight && <span className="mem-full-tag hi">★ 高亮</span>}
           {feel && <span className="mem-full-tag feel">feel</span>}
           {isNoise(m) && <span className="mem-full-tag noise">⌀ 噪声</span>}
+          {m.memory_kind && <span className="mem-full-tag">{(MEMORY_KINDS.find(([key]) => key === m.memory_kind) || [null, m.memory_kind])[1]}</span>}
           {tags.map((t, i) => <span key={i} className="mem-full-tag">{t}</span>)}
         </div>
 
         <h1 className="mem-full-title">{m.name || data.id}</h1>
+        {m.subject && <div className="mem-full-meta">主体 · {m.subject}</div>}
 
         <div className="mem-full-imp-row">
           <span>重要度</span>
@@ -1398,6 +1437,7 @@ function EventTimeField({ value, onChange }) {
 
 function FormFields({
   name, setName, summary, setSummary, content, setContent,
+  memoryKind, setMemoryKind, subject, setSubject,
   imp, setImp, pin, setPin, tags, setTags, tagInput, setTagInput,
   eventTime, setEventTime,
   showSummary = true, showPin = true, contentRequired = false,
@@ -1441,6 +1481,26 @@ function FormFields({
             value={summary}
             onChange={e => setSummary(e.target.value)}
             placeholder="(可留空 · 无摘要时展示正文)"
+          />
+        </div>
+      )}
+
+      {setMemoryKind && (
+        <div className="edit-field">
+          <div className="edit-field-lbl">记忆类型与主体</div>
+          <select
+            className="edit-input"
+            value={memoryKind || ''}
+            onChange={e => setMemoryKind(e.target.value)}
+          >
+            <option value="">未分类</option>
+            {MEMORY_KINDS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
+          <input
+            className="edit-input"
+            value={subject || ''}
+            onChange={e => setSubject(e.target.value)}
+            placeholder="主体：人物、项目或对象"
           />
         </div>
       )}
@@ -1592,6 +1652,8 @@ function EditSheet({ bucketId, onClose, onSaved, onDeleted }) {
   const [hasRawSource, setHasRawSource] = useState(false);
   // 来源 — user / ai / import 三态
   const [createdBy, setCreatedBy] = useState('ai');
+  const [memoryKind, setMemoryKind] = useState('');
+  const [subject, setSubject] = useState('');
   // 记下加载时的 noise 初值, save 时若没变就完全不动 resolved 字段
   // (resolved 不止是噪声标记, 还表"已解决/未解决", 不能误覆盖)
   const originalNoiseRef = useRef(false);
@@ -1616,6 +1678,8 @@ function EditSheet({ bucketId, onClose, onSaved, onDeleted }) {
         setEventTime(toLocalDateTimeStr(m.event_time || m.created || ''));
         setHasRawSource(!!(m.raw_source && String(m.raw_source).trim()));
         setCreatedBy(m.created_by || 'ai');
+        setMemoryKind(m.memory_kind || '');
+        setSubject(m.subject || '');
         setLoading(false);
       })
       .catch(e => { if (!cancel) { setError(e.message); setLoading(false); } });
@@ -1673,6 +1737,8 @@ function EditSheet({ bucketId, onClose, onSaved, onDeleted }) {
         internalized: internalized,
         event_time: fromLocalDateTimeStr(eventTime),
         created_by: createdBy,
+        memory_kind: memoryKind,
+        subject: subject,
       };
       // 噪声字段只在用户实际切换时发送, 避免误覆盖 resolved 的本意(已解决/未解决)
       if (noise !== originalNoiseRef.current) {
@@ -1814,6 +1880,8 @@ function EditSheet({ bucketId, onClose, onSaved, onDeleted }) {
             <FormFields
               name={name} setName={setName}
               summary={summary} setSummary={setSummary}
+              memoryKind={memoryKind} setMemoryKind={setMemoryKind}
+              subject={subject} setSubject={setSubject}
               content={content} setContent={setContent}
               imp={imp} setImp={setImp}
               pin={pin} setPin={setPin}
@@ -2050,6 +2118,8 @@ function RedehydrateSheet({ open, title, hasRawSource, busy, preview, onCancel, 
 function NewScreen() {
   const [name, setName] = useState('');
   const [summary, setSummary] = useState('');
+  const [memoryKind, setMemoryKind] = useState('');
+  const [subject, setSubject] = useState('');
   const [content, setContent] = useState('');
   const [imp, setImp] = useState(5);
   const [pin, setPin] = useState(false);
@@ -2078,6 +2148,9 @@ function NewScreen() {
           tags: tags,
           protected: pin,
           highlight: highlight,
+          summary: summary.trim() || undefined,
+          memory_kind: memoryKind || undefined,
+          subject: subject.trim() || undefined,
           event_time: fromLocalDateTimeStr(eventTime) || undefined,
         }),
       });
@@ -2086,17 +2159,6 @@ function NewScreen() {
         throw new Error(err.error || `HTTP ${r.status}`);
       }
       const data = await r.json();
-      // summary 不能直接通过 create 设(create() 不接 summary 字段),
-      // 如果用户写了 summary,补一次 update
-      if (summary.trim()) {
-        try {
-          await fetch('/api/bucket/' + encodeURIComponent(data.id) + '/update', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ summary: summary.trim() }),
-          });
-        } catch (_) { /* 忽略,用户可以以后再编辑 */ }
-      }
       // 用 replace 而不是 navigate,这样后退键直接回上层(如首页),不会回到 /new
       window.location.replace('#/mem/' + encodeURIComponent(data.id));
     } catch (e) {
@@ -2120,6 +2182,8 @@ function NewScreen() {
         <FormFields
           name={name} setName={setName}
           summary={summary} setSummary={setSummary}
+          memoryKind={memoryKind} setMemoryKind={setMemoryKind}
+          subject={subject} setSubject={setSubject}
           content={content} setContent={setContent}
           imp={imp} setImp={setImp}
           pin={pin} setPin={setPin}

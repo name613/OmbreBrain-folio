@@ -45,6 +45,11 @@ from utils import generate_bucket_id, sanitize_name, safe_path, now_iso, is_high
 
 logger = logging.getLogger("ombre_brain.bucket")
 
+MEMORY_KINDS = frozenset({
+    "fact", "procedure", "commitment", "preference", "relationship",
+    "episode", "reflection", "desire",
+})
+
 
 class BucketManager:
     """
@@ -218,6 +223,37 @@ class BucketManager:
     # query 切 token 用正则: 中英标点 + 空白 + 全角符号
     # 切完保留 len 2..12 的 token (太短 stopword 噪音, 太长几乎不会在桶里出现)
     _TOKEN_SPLIT_RE = None  # lazy compile
+
+    @staticmethod
+    def kind_multiplier(query: str, metadata: dict) -> float:
+        """Small intent-aware rerank; unclassified legacy memories stay neutral."""
+        q = str(query or "").lower()
+        kind = str((metadata or {}).get("memory_kind", "")).lower()
+        if not kind:
+            return 1.0
+
+        emotional = any(term in q for term in (
+            "感受", "感觉", "情绪", "心情", "内心", "难过", "开心", "害怕", "feel", "emotion",
+        ))
+        technical = any(term in q for term in (
+            "怎么", "如何", "方法", "步骤", "配置", "部署", "安装", "运行", "命令", "代码",
+            "路径", "地址", "端口", "密钥", "变量", "token", "config", "deploy", "server", "url",
+        ))
+        if technical and not emotional:
+            if kind in {"fact", "procedure"}:
+                return 1.25
+            if kind in {"reflection", "relationship", "desire"}:
+                return 0.55
+        if emotional:
+            if kind in {"reflection", "relationship", "episode"}:
+                return 1.2
+            if kind == "procedure":
+                return 0.7
+        if any(term in q for term in ("约定", "答应", "待办", "计划", "commitment", "todo")):
+            return 1.25 if kind == "commitment" else 0.9
+        if any(term in q for term in ("喜欢", "偏好", "讨厌", "习惯", "preference")):
+            return 1.25 if kind == "preference" else 0.9
+        return 1.0
 
     # 内置 stopword 黑名单 — 弱语义疑问/连接词 + 测试场景 noise + 时间元数据
     # 设计取舍: 只过滤 query 里出现频率高且语义弱的 2-3 字常用词;
@@ -611,6 +647,8 @@ class BucketManager:
         event_time: str = None,
         created_by: str = None,
         summary: str = None,
+        memory_kind: str = None,
+        subject: str = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -667,6 +705,11 @@ class BucketManager:
             metadata["highlight"] = True
         if summary:
             metadata["summary"] = str(summary)[:600]
+        kind = str(memory_kind or "").strip().lower()
+        if kind in MEMORY_KINDS:
+            metadata["memory_kind"] = kind
+        if subject and str(subject).strip():
+            metadata["subject"] = str(subject).strip()[:120]
 
         # --- Assemble Markdown file (frontmatter + body) ---
         # --- 组装 Markdown 文件 ---
@@ -899,17 +942,13 @@ class BucketManager:
             new_type = kwargs["type"]
             if new_type in ("dynamic", "feel", "permanent", "archived"):
                 post["type"] = new_type
-        # created_by(来源分类) — user / ai / import 三态
-        # 'ai' 是历史默认 (导入和 AI proactive 都曾混在 ai 里), 现在 import 单独区分。
-        # 未知值静默 drop, 避免脏数据; 以后扩第四种 (如 'system') 加进白名单即可
+        # created_by also carries named AI identities, so it must not be a fixed enum.
         if "created_by" in kwargs:
             cb = kwargs["created_by"]
             if cb is None or cb == "":
                 _drop("created_by")
-            elif str(cb) in {"user", "ai", "import"}:
-                post["created_by"] = str(cb)
             else:
-                logger.warning(f"忽略未知 created_by 值: {cb!r} (合法: user/ai/import)")
+                post["created_by"] = str(cb).strip()[:64]
         # raw_source(导入工作台"查看原文"用) — 任意字符串
         if "raw_source" in kwargs:
             rs = kwargs["raw_source"]
@@ -933,6 +972,20 @@ class BucketManager:
                 _drop("summary")
             else:
                 post["summary"] = str(sm)[:600]  # 摘要不该超过这个长度
+        if "memory_kind" in kwargs:
+            mk = str(kwargs["memory_kind"] or "").strip().lower()
+            if not mk:
+                _drop("memory_kind")
+            elif mk in MEMORY_KINDS:
+                post["memory_kind"] = mk
+            else:
+                logger.warning(f"忽略未知 memory_kind: {mk!r}")
+        if "subject" in kwargs:
+            subject = str(kwargs["subject"] or "").strip()
+            if subject:
+                post["subject"] = subject[:120]
+            else:
+                _drop("subject")
         # event_time:用户事后纠正"这事到底发生在哪天"
         # 传 None 或空字符串 → 清掉这个字段(回退到用 created 显示)
         if "event_time" in kwargs:
@@ -1230,6 +1283,7 @@ class BucketManager:
         query_valence: float = None,
         query_arousal: float = None,
         record_stats: bool = True,
+        memory_kinds: list[str] = None,
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
@@ -1249,18 +1303,24 @@ class BucketManager:
 
         # --- Layer 1: domain pre-filter (fast scope reduction) ---
         # --- 第一层：主题域预筛（快速缩小范围）---
+        if memory_kinds:
+            allowed_kinds = {str(k).strip().lower() for k in memory_kinds if str(k).strip()}
+            candidates = [
+                b for b in all_buckets
+                if str((b.get("metadata") or {}).get("memory_kind", "")).lower() in allowed_kinds
+            ]
+        else:
+            candidates = all_buckets
+
         if domain_filter:
             filter_set = {d.lower() for d in domain_filter}
             candidates = [
-                b for b in all_buckets
+                b for b in candidates
                 if {d.lower() for d in b["metadata"].get("domain", [])} & filter_set
             ]
-            # Fall back to full search if pre-filter yields nothing
-            # 预筛为空则回退全量搜索
-            if not candidates:
+            # A kind filter is an explicit contract; do not silently widen it.
+            if not candidates and not memory_kinds:
                 candidates = all_buckets
-        else:
-            candidates = all_buckets
 
         # --- Layer 2: weighted multi-dim ranking ---
         # --- 第二层：多维加权精排 ---
@@ -1286,6 +1346,7 @@ class BucketManager:
                             continue
                         # resolved 桶仍按 fuzzy 路径同样的降权处理 (× 0.3), 保持一致行为
                         s = pm["score"] * (0.3 if meta.get("resolved", False) else 1.0)
+                        s *= self.kind_multiplier(query, meta)
                         bucket["score"] = round(s, 2)
                         bucket["matched_in"] = pm["matched_in"]
                         bucket["field_scores"] = pm["field_scores"]
@@ -1332,6 +1393,7 @@ class BucketManager:
                 # 已解决的桶降权排序（但仍可被关键词激活）
                 if meta.get("resolved", False):
                     normalized *= 0.3
+                normalized *= self.kind_multiplier(query, meta)
 
                 # title_hit_bonus: title 字段命中(field_score ≥ _MATCH_THRESHOLD) 给 final 加分。
                 # 不进分母, 直接 += normalized。默认 0 → 无变化; 用户 runtime 调高让 title 命中桶顶上去。
