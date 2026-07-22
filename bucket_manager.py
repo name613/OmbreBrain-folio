@@ -358,7 +358,8 @@ class BucketManager:
         每个 query token 在桶各字段做 `token in field_text`, 命中累加该字段权重。
         Score = sum(命中 token × 字段权重); 无命中 = 0 = 不入选。
 
-        字段权重沿用 fuzzy 路径同样的值: name×3 / domain×2.5 / tags×2 / summary×1.5 / content×content_weight
+        字段权重沿用 fuzzy 路径同样的值: name×3 / subject×2.5 / domain×2.5 /
+        tags×2 / summary×1.5 / content×content_weight
         Returns 跟 _calc_topic_match 同 shape: {score, matched_in, field_scores}
         """
         tokens = self._split_query_tokens(query)
@@ -367,6 +368,7 @@ class BucketManager:
 
         meta = bucket.get("metadata", {}) or {}
         name = str(meta.get("name") or "")
+        subject = str(meta.get("subject") or "")
         summary = str(meta.get("summary") or "")
         content = str(bucket.get("content") or "")
         domain_str = " ".join(meta.get("domain") or [])
@@ -374,6 +376,7 @@ class BucketManager:
 
         fields = [
             ("title",   name,       3.0),
+            ("subject", subject,    2.5),
             ("domain",  domain_str, 2.5),
             ("tag",     tags_str,   2.0),
             ("summary", summary,    1.5),
@@ -1552,13 +1555,13 @@ class BucketManager:
         计算文本相关性 + 标记命中字段(给前端高亮 / 区分 keyword vs vector 用)。
 
         Score 公式向后兼容旧版本:name(×3) + domain(×2.5) + tags(×2) + content(×content_weight)
-        进分母,跟历史一致。**summary 是 bonus 加分**:命中算分子不算分母,
-        避免桶因为没 summary 字段就被无端稀释打折导致丢失旧的命中。
+        进分母,跟历史一致。**subject / summary 是 bonus 加分**:命中算分子不算分母,
+        避免旧桶因为没有这些新字段就被无端稀释打折导致丢失旧的命中。
 
         Returns:
           {
             "score": float (0~1),
-            "matched_in": list[str],  # subset of {"title","summary","tags","domain","content"}
+            "matched_in": list[str],  # subset of {"title","subject","summary","tags","domain","content"}
             "field_scores": dict[str, int],  # raw partial_ratio per field, 0~100
           }
         """
@@ -1566,6 +1569,7 @@ class BucketManager:
 
         # 各字段独立 partial_ratio
         name_raw = fuzz.partial_ratio(query, meta.get("name", "") or "")
+        subject_raw = fuzz.partial_ratio(query, meta.get("subject", "") or "")
         summary_raw = fuzz.partial_ratio(query, meta.get("summary", "") or "")
         domain_raw = max(
             (fuzz.partial_ratio(query, d) for d in meta.get("domain", []) if d),
@@ -1584,18 +1588,23 @@ class BucketManager:
         domain_score = domain_raw * 2.5
         tag_score = tag_raw * 2
         content_score = content_raw * self.content_weight
-        # summary 走 bonus 通道,只加分子(权重 1.5),不进分母 → 不稀释其他字段命中
+        # 新字段走 bonus 通道,只加分子、不进分母 → 不稀释没有新字段的旧桶
+        subject_bonus = subject_raw * 2.5
         summary_bonus = summary_raw * 1.5
 
         weight_sum = 3 + 2.5 + 2 + self.content_weight  # 旧分母,保护已有阈值行为
-        score = (name_score + domain_score + tag_score + content_score + summary_bonus) / (100 * weight_sum)
-        # 上限 1.0(summary 命中拉高时可能超 1.0,但分子仍被 100*weight_sum 限制)
+        score = (
+            name_score + domain_score + tag_score + content_score
+            + subject_bonus + summary_bonus
+        ) / (100 * weight_sum)
+        # 上限 1.0(bonus 命中拉高时可能超 1.0)
         if score > 1.0:
             score = 1.0
 
         # 字段命中判定(给前端展示"命中: 标题/摘要/正文..."用)
         matched_in = []
         if name_raw >= self._MATCH_THRESHOLD: matched_in.append("title")
+        if subject_raw >= self._MATCH_THRESHOLD: matched_in.append("subject")
         if summary_raw >= self._MATCH_THRESHOLD: matched_in.append("summary")
         if domain_raw >= self._MATCH_THRESHOLD: matched_in.append("domain")
         if tag_raw >= self._MATCH_THRESHOLD: matched_in.append("tag")
@@ -1606,6 +1615,7 @@ class BucketManager:
             "matched_in": matched_in,
             "field_scores": {
                 "title": name_raw,
+                "subject": subject_raw,
                 "summary": summary_raw,
                 "domain": domain_raw,
                 "tag": tag_raw,
