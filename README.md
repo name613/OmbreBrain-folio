@@ -45,7 +45,7 @@
 |------|------|
 | `breath(query, domain, memory_kind, ...)` | 浮现/检索记忆；可只查事实、操作方法、约定等类型 |
 | `hold(content, memory_kind, subject, ...)` | 存储单条记忆；自动识别记忆类型与主体，`feel=True` 仍写独立感受层 |
-| `grow(content, event_time)` | 日记归档，自动拆分长内容为多个记忆桶 |
+| `grow(content, event_time)` | 日记归档，自动拆分长内容并为每条保留记忆类型与主体 |
 | `trace(bucket_id, resolved, protected, highlight, ...)` | 修改元数据、标记已解决、删除 |
 | `pulse(include_archive)` | 查看系统状态 + 记忆桶列表 |
 | `dream()` | 做梦——读最近记忆桶，自省消化 |
@@ -54,6 +54,8 @@
 ### 类型化检索与身份隔离
 
 新记忆可标为 `fact`、`procedure`、`commitment`、`preference`、`relationship`、`episode`、`reflection` 或 `desire`。技术/配置类查询会优先事实与操作方法，降低纯反思内容的排名；旧记忆没有该字段时保持原行为。
+
+自动分类遵循可审阅的边界：仅仅提到某个人仍可是一条 `fact`；只有记忆核心在于双方关系、互动模式或共同经历时才使用 `relationship`；一次性经历使用 `episode`。`grow` 拆分长内容后会校验并保留这些类型和主体，未知类型安全退回 `episode`。
 
 `subject`（主要人物、项目或对象）同时参与模糊和精确检索。只在主体字段中出现的名字也可被召回，检索调试结果会用 `matched_in: ["subject"]` 说明命中来源；主体作为加分字段，不会稀释没有该字段的历史记忆。
 
