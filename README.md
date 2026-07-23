@@ -55,6 +55,8 @@
 
 新记忆可标为 `fact`、`procedure`、`commitment`、`preference`、`relationship`、`episode`、`reflection` 或 `desire`。技术/配置类查询会优先事实与操作方法，降低纯反思内容的排名；旧记忆没有该字段时保持原行为。
 
+`subject`（主要人物、项目或对象）同时参与模糊和精确检索。只在主体字段中出现的名字也可被召回，检索调试结果会用 `matched_in: ["subject"]` 说明命中来源；主体作为加分字段，不会稀释没有该字段的历史记忆。
+
 命名 AI 身份以 `created_by` 为所有权依据，即使对应 MCP key 暂时从环境变量移除，也不会自动变成共享记忆。历史 `ai`、`user`、`import` 和无所有者记忆保持共享兼容。
 
 `breath(domain="feel")` 会为每条旧感受标注距今天数，并明确它是过去经历的证据、不是当前情绪指令，避免模型把旧情绪直接续写成“此刻仍然如此”。

@@ -3099,8 +3099,8 @@ async def api_search(request):
           {
             id, name, score, domain, valence, arousal,
             content_preview,
-            matched_in: ["title","summary","tag","domain","content"],  # 命中字段,前端高亮 / 标签
-            field_scores: {title, summary, domain, tag, content},  # 0-100 原分,debug 用
+            matched_in: ["title","subject","summary","tag","domain","content"],  # 命中字段,前端高亮 / 标签
+            field_scores: {title, subject, summary, domain, tag, content},  # 0-100 原分,debug 用
             summary,  # 摘要原文(给前端命中高亮)
             tags,
           },
@@ -3161,6 +3161,7 @@ async def api_search(request):
                 "score": b.get("score", 0),
                 "domain": meta.get("domain", []),
                 "tags": meta.get("tags", []),
+                "subject": meta.get("subject", ""),
                 "summary": meta.get("summary", ""),
                 "valence": meta.get("valence", 0.5),
                 "arousal": meta.get("arousal", 0.3),
