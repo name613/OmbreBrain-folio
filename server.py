@@ -945,6 +945,8 @@ async def grow(content: str, event_time: str = "") -> str:
             name=analysis.get("suggested_name", ""),
             event_time=event_time or None,
             created_by=creator,
+            memory_kind=analysis.get("memory_kind", "episode"),
+            subject=analysis.get("subject", ""),
         )
         return f"⚠ 自动拆分失败,已【整段存为一条】记忆(未拆分,内容没丢)→ {result_name}"
 
