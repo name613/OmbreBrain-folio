@@ -5,7 +5,7 @@ import pytest
 from datetime import datetime, timezone
 
 from desire_engine import DesireEngine
-from identity_scope import can_access
+from identity_scope import can_access, canonical_identity
 from bucket_manager import BucketManager
 from memory_context import feel_temporal_lens
 
@@ -19,6 +19,66 @@ def test_named_identity_owner_is_private_even_when_key_is_removed():
 def test_legacy_shared_creator_remains_visible():
     assert can_access({"created_by": "ai", "tags": []}, "cc", {"cc", "keke"})
     assert can_access({"tags": []}, "keke", {"cc", "keke"})
+
+
+@pytest.mark.parametrize("creator", ["", "ai", "user", "import", "system"])
+def test_legacy_creator_can_be_assigned_to_qiqi(creator):
+    metadata = {"created_by": creator, "tags": []}
+    assert can_access(metadata, "qiqi", {"qiqi", "keke"}, legacy_owner="qiqi")
+    assert not can_access(metadata, "keke", {"qiqi", "keke"}, legacy_owner="qiqi")
+
+
+def test_legacy_identity_tag_overrides_default_legacy_owner():
+    metadata = {"created_by": "ai", "tags": ["keke"]}
+    assert can_access(metadata, "keke", {"qiqi", "keke"}, legacy_owner="qiqi")
+    assert not can_access(metadata, "qiqi", {"qiqi", "keke"}, legacy_owner="qiqi")
+
+
+def test_identity_aliases_apply_to_owner_and_tags():
+    aliases = {"可可": "keke", "柒柒": "qiqi"}
+    assert canonical_identity("可可", aliases) == "keke"
+    assert can_access(
+        {"created_by": "可可", "tags": []},
+        "keke",
+        {"qiqi", "keke"},
+        legacy_owner="qiqi",
+        aliases=aliases,
+    )
+    assert not can_access(
+        {"created_by": "可可", "tags": []},
+        "qiqi",
+        {"qiqi", "keke"},
+        legacy_owner="qiqi",
+        aliases=aliases,
+    )
+    assert can_access(
+        {"created_by": "ai", "tags": ["柒柒"]},
+        "qiqi",
+        {"qiqi", "keke"},
+        legacy_owner="qiqi",
+        aliases=aliases,
+    )
+
+
+def test_explicit_shared_scope_is_visible_to_every_identity():
+    metadata = {"created_by": "keke", "tags": ["keke"], "share_scope": "shared"}
+    assert can_access(
+        metadata,
+        "qiqi",
+        {"qiqi", "keke"},
+        legacy_owner="qiqi",
+    )
+
+
+def test_conflicting_identity_tags_fail_closed():
+    metadata = {"created_by": "ai", "tags": ["qiqi", "keke"]}
+    for caller in ("qiqi", "keke"):
+        assert not can_access(
+            metadata,
+            caller,
+            {"qiqi", "keke"},
+            legacy_owner="qiqi",
+        )
 
 
 def test_legacy_identity_tag_is_still_isolated():
