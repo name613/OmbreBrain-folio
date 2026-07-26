@@ -144,6 +144,20 @@ Volume 挂载的记忆数据不受影响。
 
 ---
 
+## Legacy identity ownership
+
+Identity ownership can be changed at read time without rewriting memory files:
+
+```env
+OMBRE_LEGACY_IDENTITY=qiqi
+OMBRE_IDENTITY_ALIASES=可可:keke,柒柒:qiqi
+```
+
+With this configuration, unowned and legacy `ai`, `user`, `import`, or `system`
+memories belong to qiqi. A legacy identity tag overrides that default owner.
+Named owners remain private after alias normalization. Only memories with an
+explicit `share_scope: shared` are readable across identities.
+
 ## License
 
 本项目基于上游 [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain) 的开源许可。详见 LICENSE 文件。

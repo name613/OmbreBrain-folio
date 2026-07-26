@@ -100,10 +100,29 @@ def _parse_mcp_keys() -> dict:
     return result
 
 
+def _parse_identity_aliases() -> dict:
+    raw = os.environ.get("OMBRE_IDENTITY_ALIASES", "").strip()
+    if not raw:
+        return {}
+    result = {}
+    for pair in raw.split(","):
+        alias, separator, canonical = pair.strip().partition(":")
+        if separator and alias.strip() and canonical.strip():
+            result[alias.strip()] = canonical.strip()
+    return result
+
+
 def _identity_can_access(metadata: dict, caller: str = None) -> bool:
-    """Keep identities isolated while leaving legacy shared memories readable."""
+    """Apply owner, legacy-owner, alias, and identity-tag boundaries."""
     caller = caller or _mcp_identity.get()
-    return identity_can_access(metadata, caller, set(_parse_mcp_keys().values()))
+    legacy_owner = os.environ.get("OMBRE_LEGACY_IDENTITY", "").strip() or None
+    return identity_can_access(
+        metadata,
+        caller,
+        set(_parse_mcp_keys().values()),
+        legacy_owner=legacy_owner,
+        aliases=_parse_identity_aliases(),
+    )
 
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
