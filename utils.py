@@ -337,6 +337,39 @@ def strip_wikilinks(text: str) -> str:
     return re.sub(r"\[\[([^\]]+)\]\]", r"\1", text) if text else text
 
 
+def redact_sensitive_text(text: str) -> str:
+    """Mask common credentials before memory text is returned to an AI client."""
+    if not text:
+        return text
+
+    redacted = re.sub(
+        r"(?i)\b((?:https?|rtsp|ftp)://)[^/\s:@]+:[^@\s/]+@",
+        r"\1[REDACTED]@",
+        text,
+    )
+    label = (
+        r"(?:api[\s_-]*key|access[\s_-]*token|token|password|passwd|pwd|"
+        r"密码|授权码|密钥|私钥|认证)"
+    )
+    secret_value = r"[A-Za-z0-9._~+/=-]{8,}"
+    redacted = re.sub(
+        rf"(?i)({label}\s*[:=：]\s*)(?:Bearer\s+)?{secret_value}",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        rf"(?i)({label}\s+){secret_value}",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        rf"(?i)\bBearer\s+{secret_value}",
+        "Bearer [REDACTED]",
+        redacted,
+    )
+    return redacted
+
+
 def sanitize_name(name: str) -> str:
     """
     Sanitize bucket name, keeping only safe characters.

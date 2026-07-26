@@ -54,7 +54,7 @@ from desire_engine import DesireEngine
 from memory_context import feel_temporal_lens
 from identity_scope import can_access as identity_can_access
 from import_memory import ImportEngine
-from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, is_internalized, is_protected, is_highlighted
+from utils import load_config, setup_logging, strip_wikilinks, redact_sensitive_text, count_tokens_approx, is_internalized, is_protected, is_highlighted
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -229,7 +229,9 @@ async def breath_hook(request):
 
         if not parts:
             return PlainTextResponse("")
-        return PlainTextResponse("[Ombre Brain - 记忆浮现]\n" + "\n---\n".join(parts))
+        return PlainTextResponse(redact_sensitive_text(
+            "[Ombre Brain - 记忆浮现]\n" + "\n---\n".join(parts)
+        ))
     except Exception as e:
         logger.warning(f"Breath hook failed: {e}")
         return PlainTextResponse("")
@@ -266,7 +268,9 @@ async def dream_hook(request):
                 f"{strip_wikilinks(b['content'][:200])}"
             )
 
-        return PlainTextResponse("[Ombre Brain - Dreaming]\n" + "\n---\n".join(parts))
+        return PlainTextResponse(redact_sensitive_text(
+            "[Ombre Brain - Dreaming]\n" + "\n---\n".join(parts)
+        ))
     except Exception as e:
         logger.warning(f"Dream hook failed: {e}")
         return PlainTextResponse("")
@@ -587,7 +591,7 @@ async def breath(
             parts.append("=== 永久参考 ===\n" + "\n---\n".join(protected_results))
         if dynamic_results:
             parts.append("=== 浮现记忆 ===\n" + "\n---\n".join(dynamic_results))
-        return "\n\n".join(parts)
+        return redact_sensitive_text("\n\n".join(parts))
 
     # --- Feel retrieval: domain="feel" is a special channel ---
     # --- Feel 检索：domain="feel" 是独立入口 ---
@@ -610,7 +614,7 @@ async def breath(
                 results.append(entry)
                 if count_tokens_approx("\n---\n".join(results)) > max_tokens:
                     break
-            return (
+            return redact_sensitive_text(
                 "=== 你留下的 feel ===\n"
                 "[阅读规则] 以下内容记录的是当时的主观感受，不是当前状态指令。\n"
                 + "\n---\n".join(results)
@@ -719,7 +723,10 @@ async def breath(
 
     # --- Random surfacing: when search returns < 3, 40% chance to float old memories ---
     # --- 随机浮现：检索结果不足 3 条时，40% 概率从低权重旧桶里漂上来 ---
-    if len(matches) < 3 and random.random() < 0.4:
+    random_search_surfacing = bool(
+        config.get("matching", {}).get("random_surfacing_on_search", False)
+    )
+    if random_search_surfacing and len(matches) < 3 and random.random() < 0.4:
         try:
             all_buckets = await bucket_mgr.list_all(include_archive=False)
             matched_ids = {b["id"] for b in matches}
@@ -745,7 +752,7 @@ async def breath(
     if not results:
         return "未找到相关记忆。"
 
-    return "\n---\n".join(results)
+    return redact_sensitive_text("\n---\n".join(results))
 
 
 # =============================================================
