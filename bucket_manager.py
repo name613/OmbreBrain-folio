@@ -1571,14 +1571,8 @@ class BucketManager:
         name_raw = fuzz.partial_ratio(query, meta.get("name", "") or "")
         subject_raw = fuzz.partial_ratio(query, meta.get("subject", "") or "")
         summary_raw = fuzz.partial_ratio(query, meta.get("summary", "") or "")
-        domain_raw = max(
-            (fuzz.partial_ratio(query, d) for d in meta.get("domain", []) if d),
-            default=0,
-        )
-        tag_raw = max(
-            (fuzz.partial_ratio(query, tag) for tag in meta.get("tags", []) if tag),
-            default=0,
-        )
+        domain_raw = self._calc_list_field_match(query, meta.get("domain", []))
+        tag_raw = self._calc_list_field_match(query, meta.get("tags", []))
         # 正文不再 [:1000] 截断 — 完整搜全文。fuzz.partial_ratio 是 O(N*M),
         # 对几 KB content 仍是 ms 级,真碰到几十万字的桶再说
         content_raw = fuzz.partial_ratio(query, bucket.get("content", "") or "")
@@ -1622,6 +1616,50 @@ class BucketManager:
                 "content": content_raw,
             },
         }
+
+    def _calc_list_field_match(self, query: str, values: list) -> float:
+        """Score list fields without letting one short generic item score 100."""
+        clean_values = [
+            str(value).strip()
+            for value in (values or [])
+            if str(value).strip()
+        ]
+        query = str(query or "").strip()
+        if not query or not clean_values:
+            return 0.0
+
+        query_compact = "".join(query.lower().split())
+        best_fuzzy = 0.0
+        for value in clean_values:
+            value_compact = "".join(value.lower().split())
+            raw = float(fuzz.partial_ratio(query_compact, value_compact))
+            if value_compact == query_compact:
+                adjusted = raw
+            else:
+                length_ratio = min(
+                    1.0,
+                    len(value_compact) / max(1, len(query_compact)),
+                )
+                adjusted = raw * (length_ratio ** 0.5)
+            best_fuzzy = max(best_fuzzy, adjusted)
+
+        tokens = self._split_query_tokens(query)
+        if not tokens:
+            return best_fuzzy
+
+        total_weight = sum(len(token) for token in tokens)
+        hit_weight = 0
+        for token in tokens:
+            if any(
+                token.lower() in value.lower()
+                or value.lower() in token.lower()
+                for value in clean_values
+            ):
+                hit_weight += len(token)
+        coverage_score = (
+            (hit_weight / total_weight) * 100 if total_weight else 0.0
+        )
+        return max(best_fuzzy, coverage_score)
 
     def _calc_topic_score(self, query: str, bucket: dict) -> float:
         """
