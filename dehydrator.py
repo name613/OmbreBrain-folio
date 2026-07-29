@@ -33,6 +33,7 @@ from datetime import datetime
 
 from openai import AsyncOpenAI
 
+from memory_contract import prepare_memory_candidate
 from utils import count_tokens_approx, is_internalized
 
 
@@ -773,23 +774,19 @@ class Dehydrator:
         except (ValueError, TypeError):
             valence, arousal = 0.5, 0.3
 
-        valid_kinds = {
-            "fact", "procedure", "commitment", "preference", "relationship",
-            "episode", "reflection", "desire",
-        }
-        memory_kind = str(result.get("memory_kind", "episode")).strip().lower()
-        if memory_kind not in valid_kinds:
-            memory_kind = "episode"
-
-        return {
-            "domain": result.get("domain", ["未分类"])[:3],
+        candidate, contract = prepare_memory_candidate({
+            "domain": result.get("domain", ["未分类"]),
+            "tags": result.get("tags", []),
+            "suggested_name": result.get("suggested_name", ""),
+            "memory_kind": result.get("memory_kind", ""),
+            "subject": result.get("subject", ""),
+        }, redact_generated_text=False)
+        candidate.update({
             "valence": valence,
             "arousal": arousal,
-            "tags": result.get("tags", [])[:15],
-            "suggested_name": str(result.get("suggested_name", ""))[:20],
-            "memory_kind": memory_kind,
-            "subject": str(result.get("subject", "")).strip()[:120],
-        }
+            "_write_contract": contract,
+        })
+        return candidate
 
     # ---------------------------------------------------------
     # Default analysis result (empty content or total failure)
@@ -912,29 +909,24 @@ class Dehydrator:
                 arousal = max(0.0, min(1.0, float(item.get("arousal", 0.3))))
             except (ValueError, TypeError):
                 valence, arousal = 0.5, 0.3
-            memory_kind = str(item.get("memory_kind", "episode")).strip().lower()
-            if memory_kind not in {
-                "fact", "procedure", "commitment", "preference", "relationship",
-                "episode", "reflection", "desire",
-            }:
-                memory_kind = "episode"
-            subject = re.sub(
-                r"\[\[([^\]]+)\]\]",
-                r"\1",
-                str(item.get("subject", "")).strip(),
-            )[:120]
-
-            validated.append({
-                "name": str(item.get("name", ""))[:20],
+            candidate, contract = prepare_memory_candidate({
+                "name": item.get("name", ""),
                 "content": str(item.get("content", "")),
-                "domain": item.get("domain", ["未分类"])[:3],
+                "summary": item.get("summary", ""),
+                "source_excerpt": item.get("source_excerpt", ""),
+                "domain": item.get("domain", ["未分类"]),
+                "tags": item.get("tags", []),
+                "memory_kind": item.get("memory_kind", ""),
+                "subject": item.get("subject", ""),
+            })
+            candidate.update({
                 "valence": valence,
                 "arousal": arousal,
-                "tags": item.get("tags", [])[:15],
                 "importance": importance,
-                "memory_kind": memory_kind,
-                "subject": subject,
+                "event_time": str(item.get("event_time", "")).strip(),
+                "_write_contract": contract,
             })
+            validated.append(candidate)
         return validated
 
     # ---------------------------------------------------------

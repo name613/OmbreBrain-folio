@@ -160,6 +160,23 @@ class BucketManager:
         # 解决: 长 query 在 partial_ratio 下错乱 + 高 valence 桶被 warmth_boost 推得无关键词也排前。
         # 默认 False → 维持原 fuzzy 行为, 开源/上游兼容。
         self.precise_match_mode = bool(scoring.get("precise_match_mode", False))
+        # multi_token_fallback: 保留 fuzzy 主排序，只在至少两个有效 token
+        # 以足够覆盖率命中时提供一个可解释的严格关键词兜底。
+        self.multi_token_fallback = bool(scoring.get("multi_token_fallback", False))
+        try:
+            self.multi_token_min_coverage = max(
+                0.0,
+                min(1.0, float(scoring.get("multi_token_min_coverage", 0.4))),
+            )
+        except (TypeError, ValueError):
+            self.multi_token_min_coverage = 0.4
+        try:
+            self.procedure_intent_boost = max(
+                1.0,
+                min(1.5, float(scoring.get("procedure_intent_boost", 1.0))),
+            )
+        except (TypeError, ValueError):
+            self.procedure_intent_boost = 1.0
 
     # Runtime-tunable scoring keys (whitelist; values type-coerced per key).
     # 跟 decay_engine.DEFAULTS 同思路 — 限定可被 /api/scoring-config 改的 key, 防误写。
@@ -169,6 +186,9 @@ class BucketManager:
         "keyword_first_sort": False,   # bool
         "dryrun_log": False,           # bool
         "precise_match_mode": False,   # bool — 严格关键词命中模式 (砍 emotion/time/importance/warmth)
+        "multi_token_fallback": False, # bool — fuzzy 低信号时用多 token 严格命中兜底
+        "multi_token_min_coverage": 0.4,  # float, 0~1 — 查询 token 最低覆盖率
+        "procedure_intent_boost": 1.0, # float, 1~1.5 — 技术/步骤问法的 procedure 额外倍率
         "warmth_boost": 0.0,           # float — 高 valence(温暖)桶检索额外加分 (env OMBRE_SCORING_WARMTH_BOOST 为初值)
     }
 
@@ -194,6 +214,24 @@ class BucketManager:
             self.dryrun_log = bool(overrides["dryrun_log"])
         if "precise_match_mode" in overrides:
             self.precise_match_mode = bool(overrides["precise_match_mode"])
+        if "multi_token_fallback" in overrides:
+            self.multi_token_fallback = bool(overrides["multi_token_fallback"])
+        if "multi_token_min_coverage" in overrides:
+            try:
+                self.multi_token_min_coverage = max(
+                    0.0,
+                    min(1.0, float(overrides["multi_token_min_coverage"])),
+                )
+            except (TypeError, ValueError):
+                pass
+        if "procedure_intent_boost" in overrides:
+            try:
+                self.procedure_intent_boost = max(
+                    1.0,
+                    min(1.5, float(overrides["procedure_intent_boost"])),
+                )
+            except (TypeError, ValueError):
+                pass
         if "warmth_boost" in overrides:
             try:
                 self.w_warmth = max(0.0, float(overrides["warmth_boost"]))
@@ -206,6 +244,9 @@ class BucketManager:
             f"keyword_first_sort={self.keyword_first_sort}, "
             f"dryrun_log={self.dryrun_log}, "
             f"precise_match_mode={self.precise_match_mode}, "
+            f"multi_token_fallback={self.multi_token_fallback}, "
+            f"multi_token_min_coverage={self.multi_token_min_coverage}, "
+            f"procedure_intent_boost={self.procedure_intent_boost}, "
             f"warmth_boost={self.w_warmth}"
         )
 
@@ -217,6 +258,9 @@ class BucketManager:
             "keyword_first_sort": self.keyword_first_sort,
             "dryrun_log": self.dryrun_log,
             "precise_match_mode": self.precise_match_mode,
+            "multi_token_fallback": self.multi_token_fallback,
+            "multi_token_min_coverage": self.multi_token_min_coverage,
+            "procedure_intent_boost": self.procedure_intent_boost,
             "warmth_boost": self.w_warmth,
         }
 
@@ -255,6 +299,14 @@ class BucketManager:
             return 1.25 if kind == "preference" else 0.9
         return 1.0
 
+    def effective_kind_multiplier(self, query: str, metadata: dict) -> float:
+        """Apply runtime procedure preference without changing legacy defaults."""
+        base = self.kind_multiplier(query, metadata)
+        kind = str((metadata or {}).get("memory_kind", "")).lower()
+        if kind == "procedure" and base > 1.0:
+            return base * self.procedure_intent_boost
+        return base
+
     # 内置 stopword 黑名单 — 弱语义疑问/连接词 + 测试场景 noise + 时间元数据
     # 设计取舍: 只过滤 query 里出现频率高且语义弱的 2-3 字常用词;
     # 像 "记忆 / 记得 / 时间 / 测试" 这种在普通对话里可能是真关键词的不加;
@@ -263,7 +315,7 @@ class BucketManager:
         # 弱语义疑问/连接词
         "什么", "怎么", "为什么", "怎样", "如何",
         "可以", "应该", "想要", "需要",
-        "一下", "一点", "一些", "已经", "还有",
+        "一下", "一点", "一些", "已经", "还有", "以及",
         # 人称代词复合
         "你的", "我的", "他的", "她的", "我们", "你们",
         # "你还记得 X 吗" 这类 query 前缀的 n-gram noise (2-3 gram 会切出来)
@@ -288,7 +340,9 @@ class BucketManager:
         """
         import re
         if cls._TOKEN_SPLIT_RE is None:
-            cls._TOKEN_SPLIT_RE = re.compile(r'[\s,。!?:;、《》「」"\'""''()()【】\[\]<>\.\!\?\:;,/\\\|·~`@#\$%\^&\*\+=\-_]+')
+            cls._TOKEN_SPLIT_RE = re.compile(
+                r"[\s,。!?:;、《》「」\"'()【】\[\]<>./\\|·~`@#$%^&*+=_-]+"
+            )
         raw = cls._TOKEN_SPLIT_RE.split(query or "")
 
         try:
@@ -324,7 +378,14 @@ class BucketManager:
                     tokens.extend(cls._ngram_2_4(''.join(run_chars)))
                     run_chars = []
                 if 2 <= len(w) <= 12:
-                    tokens.append(w)
+                    # Jieba may keep a one-character request verb attached to
+                    # a two-character entity ("查蓝塔"). Remove only this
+                    # narrow conversational prefix so the entity stays
+                    # searchable without generating broad character noise.
+                    if len(w) == 3 and w[0] in "查找问看说讲":
+                        tokens.append(w[1:])
+                    else:
+                        tokens.append(w)
             if run_chars:
                 tokens.extend(cls._ngram_2_4(''.join(run_chars)))
 
@@ -364,7 +425,15 @@ class BucketManager:
         """
         tokens = self._split_query_tokens(query)
         if not tokens:
-            return {"score": 0.0, "matched_in": [], "field_scores": {}, "tokens_hit": {}}
+            return {
+                "score": 0.0,
+                "matched_in": [],
+                "field_scores": {},
+                "tokens_hit": {},
+                "query_token_count": 0,
+                "token_hit_count": 0,
+                "token_coverage": 0.0,
+            }
 
         meta = bucket.get("metadata", {}) or {}
         name = str(meta.get("name") or "")
@@ -403,6 +472,14 @@ class BucketManager:
         #       命中 2 个字段或 2 个 token → 50~60, 多字段多 token 累加, 100 封顶
         raw_score = total_score
         normalized_score = min(total_score * 10.0, 100.0)
+        distinct_hits = {
+            token
+            for hits in tokens_hit.values()
+            for token in hits
+        }
+        query_weight = sum(len(token) for token in tokens)
+        hit_weight = sum(len(token) for token in distinct_hits)
+        token_coverage = hit_weight / query_weight if query_weight else 0.0
 
         return {
             "score": normalized_score,
@@ -410,6 +487,9 @@ class BucketManager:
             "matched_in": matched_in,
             "field_scores": field_scores,
             "tokens_hit": tokens_hit,
+            "query_token_count": len(tokens),
+            "token_hit_count": len(distinct_hits),
+            "token_coverage": round(token_coverage, 4),
         }
 
     # 落盘防抖阈值: 攒够这么多次搜索, 或距上次落盘满这么多秒, 就写一次盘。
@@ -1349,11 +1429,13 @@ class BucketManager:
                             continue
                         # resolved 桶仍按 fuzzy 路径同样的降权处理 (× 0.3), 保持一致行为
                         s = pm["score"] * (0.3 if meta.get("resolved", False) else 1.0)
-                        s *= self.kind_multiplier(query, meta)
+                        s *= self.effective_kind_multiplier(query, meta)
                         bucket["score"] = round(s, 2)
                         bucket["matched_in"] = pm["matched_in"]
                         bucket["field_scores"] = pm["field_scores"]
                         bucket["tokens_hit"] = pm["tokens_hit"]
+                        bucket["token_coverage"] = pm["token_coverage"]
+                        bucket["retrieval_strategy"] = "precise"
                         bucket["_raw_score"] = pm["raw_score"]  # 给 dryrun_log 看原始累加分
                         scored.append(bucket)
                     continue  # 跳过原 fuzzy 路径
@@ -1361,6 +1443,15 @@ class BucketManager:
                 # Dim 1: topic relevance (fuzzy text, 0~1) + 命中字段
                 topic_match = self._calc_topic_match(query, bucket)
                 topic_score = topic_match["score"]
+                fallback_match = None
+                fallback_eligible = False
+                if self.multi_token_fallback:
+                    fallback_match = self._calc_precise_match(query, bucket)
+                    fallback_eligible = (
+                        fallback_match["token_hit_count"] >= 2
+                        and fallback_match["token_coverage"]
+                        >= self.multi_token_min_coverage
+                    )
 
                 # Dim 2: emotion resonance (coordinate distance, 0~1)
                 emotion_score = self._calc_emotion_score(
@@ -1396,7 +1487,9 @@ class BucketManager:
                 # 已解决的桶降权排序（但仍可被关键词激活）
                 if meta.get("resolved", False):
                     normalized *= 0.3
-                normalized *= self.kind_multiplier(query, meta)
+                kind_multiplier = self.effective_kind_multiplier(query, meta)
+                normalized *= kind_multiplier
+                retrieval_strategy = "fuzzy"
 
                 # title_hit_bonus: title 字段命中(field_score ≥ _MATCH_THRESHOLD) 给 final 加分。
                 # 不进分母, 直接 += normalized。默认 0 → 无变化; 用户 runtime 调高让 title 命中桶顶上去。
@@ -1422,16 +1515,62 @@ class BucketManager:
                     and warmth_score >= 0.3
                     and normalized >= self.fuzzy_threshold * 0.7
                 )
-                has_keyword_hit = bool(topic_match["matched_in"])
+                fuzzy_qualified = (
+                    bool(topic_match["matched_in"])
+                    or normalized >= self.fuzzy_threshold
+                    or warmth_bypass
+                )
+                fallback_used = fallback_eligible and not fuzzy_qualified
+                if fallback_used:
+                    # The strict-token path is an admission fallback, not a
+                    # second ranking system. Lift a missed result just above
+                    # the fuzzy threshold, scaled by token coverage, while
+                    # preserving a hard 0..100 score range.
+                    coverage_span = max(
+                        1e-9,
+                        1.0 - self.multi_token_min_coverage,
+                    )
+                    coverage_progress = min(
+                        1.0,
+                        max(
+                            0.0,
+                            (
+                                fallback_match["token_coverage"]
+                                - self.multi_token_min_coverage
+                            )
+                            / coverage_span,
+                        ),
+                    )
+                    fallback_floor = (
+                        self.fuzzy_threshold
+                        + (coverage_progress * 10.0)
+                    )
+                    normalized = max(
+                        normalized,
+                        min(100.0, fallback_floor * kind_multiplier),
+                    )
+                    retrieval_strategy = "multi_token_fallback"
+
+                has_keyword_hit = bool(topic_match["matched_in"]) or fallback_used
                 if has_keyword_hit or normalized >= self.fuzzy_threshold or warmth_bypass:
+                    matched_in = list(topic_match["matched_in"])
+                    field_scores = dict(topic_match["field_scores"])
+                    if fallback_used:
+                        for field in fallback_match["matched_in"]:
+                            if field not in matched_in:
+                                matched_in.append(field)
                     # 钉选/永久参考桶: 仅 title 强命中才进结果 (理由同 precise 分支)。
                     # 挡掉 has_keyword_hit(正文/摘要模糊命中) / fuzzy_threshold / warmth_bypass
                     # 这些模糊+情感旁路, 让它们不再凭弱信号占自动注入记忆位; title 命中仍放行。
-                    if pinned_like and "title" not in topic_match["matched_in"]:
+                    if pinned_like and "title" not in matched_in:
                         continue
                     bucket["score"] = round(normalized, 2)
-                    bucket["matched_in"] = topic_match["matched_in"]
-                    bucket["field_scores"] = topic_match["field_scores"]
+                    bucket["matched_in"] = matched_in
+                    bucket["field_scores"] = field_scores
+                    bucket["retrieval_strategy"] = retrieval_strategy
+                    if fallback_used:
+                        bucket["tokens_hit"] = fallback_match["tokens_hit"]
+                        bucket["token_coverage"] = fallback_match["token_coverage"]
                     scored.append(bucket)
             except Exception as e:
                 logger.warning(
@@ -1496,6 +1635,9 @@ class BucketManager:
                     "matched_in": m_in,
                     "title_hit": "title" in m_in,
                     "field_scores": b.get("field_scores", {}),
+                    "retrieval_strategy": b.get("retrieval_strategy", "fuzzy"),
+                    "tokens_hit": b.get("tokens_hit", {}),
+                    "token_coverage": b.get("token_coverage", 0.0),
                 })
             self._recent_searches.append({
                 "ts": now_iso,
@@ -1525,11 +1667,16 @@ class BucketManager:
                     "title_hit": "title" in b.get("matched_in", []),
                     "matched_in": b.get("matched_in", []),
                     "field_scores": b.get("field_scores", {}),
+                    "retrieval_strategy": b.get("retrieval_strategy", "fuzzy"),
                 }
                 # precise 模式独有: token 命中详情 + 归一化前原始分(便于反推阈值/字段权重)
                 if self.precise_match_mode:
                     item["tokens_hit"] = b.get("tokens_hit", {})
                     item["raw_score"] = b.get("_raw_score")
+                    item["token_coverage"] = b.get("token_coverage", 0.0)
+                elif self.multi_token_fallback:
+                    item["tokens_hit"] = b.get("tokens_hit", {})
+                    item["token_coverage"] = b.get("token_coverage", 0.0)
                 preview.append(item)
             logger.info(
                 f"[scoring.dryrun] query={query!r} | "

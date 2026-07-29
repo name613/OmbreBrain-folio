@@ -367,6 +367,24 @@ def redact_sensitive_text(text: str) -> str:
         "Bearer [REDACTED]",
         redacted,
     )
+    redacted = re.sub(
+        (
+            r"(?i)([?&](?:api[_-]?key|access[_-]?token|auth|token)="
+            r")[^&#\s]+"
+        ),
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        (
+            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+            r".*?"
+            r"-----END [A-Z0-9 ]*PRIVATE KEY-----"
+        ),
+        "[REDACTED PRIVATE KEY]",
+        redacted,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
     return redacted
 
 

@@ -54,6 +54,7 @@ from desire_engine import DesireEngine
 from memory_context import feel_temporal_lens
 from identity_scope import can_access as identity_can_access
 from import_memory import ImportEngine
+from memory_contract import prepare_memory_candidate
 from utils import load_config, setup_logging, strip_wikilinks, redact_sensitive_text, count_tokens_approx, is_internalized, is_protected, is_highlighted
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
@@ -320,6 +321,26 @@ async def _merge_or_create(
     检查是否有相似桶可合并，有则合并，无则新建。
     返回 (桶ID或名称, 是否合并)。
     """
+    candidate, contract = prepare_memory_candidate({
+        "content": content,
+        "tags": tags,
+        "domain": domain,
+        "name": name,
+        "memory_kind": memory_kind,
+        "subject": subject,
+    })
+    content = candidate["content"]
+    tags = candidate["tags"]
+    domain = candidate["domain"]
+    name = candidate["name"]
+    memory_kind = candidate["memory_kind"]
+    subject = candidate["subject"]
+    if contract["review_required"]:
+        logger.info(
+            "write candidate review: %s",
+            ",".join(contract["warning_codes"]),
+        )
+
     # auto_merge=False → 跳过相似桶合并, 永远新建(默认 True = 上游行为不变)。
     # 合并不稳: 打分被调高(precise/boosts)后会误合并不相干记忆 → 个人实例可关掉改手动去重。
     try:
@@ -700,7 +721,10 @@ async def breath(
                                    or _is_noise(bucket["metadata"])
                                    or bucket["metadata"].get("type") == "feel"
                                    or not _identity_can_access(bucket.get("metadata", {}), _caller)):
-                    kind_multiplier = bucket_mgr.kind_multiplier(query, bucket.get("metadata", {}))
+                    kind_multiplier = bucket_mgr.effective_kind_multiplier(
+                        query,
+                        bucket.get("metadata", {}),
+                    )
                     # For clearly technical lookup, reflection-only semantic neighbors
                     # are noise rather than useful fallbacks.
                     if kind_multiplier < 0.7:
@@ -733,7 +757,17 @@ async def breath(
             if bucket.get("vector_match"):
                 summary = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
             else:
-                summary = f"[bucket_id:{bucket['id']}] {summary}"
+                retrieval_note = ""
+                if bucket.get("retrieval_strategy") == "multi_token_fallback":
+                    fields = ",".join(bucket.get("matched_in", [])) or "unknown"
+                    coverage = float(bucket.get("token_coverage", 0.0))
+                    retrieval_note = (
+                        f"[检索依据:多关键词严格命中;字段:{fields};"
+                        f"覆盖:{coverage:.0%}] "
+                    )
+                summary = (
+                    f"{retrieval_note}[bucket_id:{bucket['id']}] {summary}"
+                )
             results.append(summary)
             token_used += summary_tokens
         except Exception as e:
@@ -853,8 +887,28 @@ async def hold(
     chosen_kind = (memory_kind or analysis.get("memory_kind", "episode")).strip().lower()
     chosen_subject = (subject or analysis.get("subject", "")).strip()
 
-    identity_tag = [creator] if creator else []
-    all_tags = list(dict.fromkeys(auto_tags + extra_tags + identity_tag))
+    all_tags = list(dict.fromkeys(auto_tags + extra_tags))
+    candidate, write_contract = prepare_memory_candidate({
+        "content": content,
+        "tags": all_tags,
+        "domain": domain,
+        "name": suggested_name,
+        "memory_kind": chosen_kind,
+        "subject": chosen_subject,
+    })
+    content = candidate["content"]
+    all_tags = candidate["tags"]
+    domain = candidate["domain"]
+    suggested_name = candidate["name"]
+    chosen_kind = candidate["memory_kind"]
+    chosen_subject = candidate["subject"]
+    if creator and creator not in all_tags:
+        all_tags.append(creator)
+    review_hint = ""
+    if write_contract["review_required"]:
+        review_hint = "\n写入自检：" + "；".join(
+            write_contract["warnings"][:3]
+        )
 
     # --- Pinned buckets bypass merge and are created directly in permanent dir ---
     # --- 钉选桶跳过合并，直接新建到 permanent 目录 ---
@@ -878,7 +932,7 @@ async def hold(
             await embedding_engine.generate_and_store(bucket_id, content)
         except Exception:
             pass
-        return f"📌钉选→{bucket_id} {','.join(domain)}"
+        return f"📌钉选→{bucket_id} {','.join(domain)}{review_hint}"
 
     # --- Step 2: merge or create / 合并或新建 ---
     result_name, is_merged = await _merge_or_create(
@@ -896,7 +950,7 @@ async def hold(
     )
 
     action = "合并→" if is_merged else "新建→"
-    return f"{action}{result_name} {','.join(domain)}"
+    return f"{action}{result_name} {','.join(domain)}{review_hint}"
 
 
 # =============================================================
@@ -999,11 +1053,17 @@ async def grow(content: str, event_time: str = "") -> str:
             )
 
             if is_merged:
-                results.append(f"📎{result_name}")
+                label = f"📎{result_name}"
                 merged += 1
             else:
-                results.append(f"📝{item.get('name', result_name)}")
+                label = f"📝{item.get('name', result_name)}"
                 created += 1
+            item_contract = item.get("_write_contract", {})
+            if item_contract.get("review_required"):
+                label += "（自检：" + "；".join(
+                    item_contract.get("warnings", [])[:2]
+                ) + "）"
+            results.append(label)
         except Exception as e:
             logger.warning(
                 f"Failed to process diary item / 日记条目处理失败: "
@@ -1582,6 +1642,26 @@ _SCORING_SCHEMA = [
         "label": "严格关键词模式",
         "type": "bool",
         "hint": "开启后检索走严格 token 命中(query 按词切, 每个词在桶各字段做精确命中), 砍掉情感/时间/重要度/温度偏置。解决「长 query 模糊匹配错乱」和「高 valence 桶没关键词也排前」。默认关=模糊匹配(上游兼容)",
+    },
+    {
+        "key": "multi_token_fallback",
+        "label": "多关键词漏检兜底",
+        "type": "bool",
+        "hint": "保留原模糊排序，只在原本会漏检、且至少两个有效词被严格找到时救回候选。不会让单个宽泛标签独自命中",
+    },
+    {
+        "key": "multi_token_min_coverage",
+        "label": "兜底词覆盖率",
+        "type": "float",
+        "min": 0.2, "max": 1.0, "step": 0.05,
+        "hint": "多关键词兜底至少覆盖多少查询词；推荐 0.4。越高越保守",
+    },
+    {
+        "key": "procedure_intent_boost",
+        "label": "操作方法意图加权",
+        "type": "float",
+        "min": 1.0, "max": 1.5, "step": 0.01,
+        "hint": "查询包含“怎么、步骤、配置、操作”等意图时，轻微提高 procedure 记忆排序。推荐 1.08",
     },
     {
         "key": "warmth_boost",
@@ -3129,6 +3209,9 @@ async def api_search(request):
             content_preview,
             matched_in: ["title","subject","summary","tag","domain","content"],  # 命中字段,前端高亮 / 标签
             field_scores: {title, subject, summary, domain, tag, content},  # 0-100 原分,debug 用
+            retrieval_strategy: "fuzzy" | "multi_token_fallback",
+            tokens_hit: {field: [token, ...]},  # 仅兜底命中时有值
+            token_coverage: 0.0,
             summary,  # 摘要原文(给前端命中高亮)
             tags,
           },
@@ -3196,6 +3279,12 @@ async def api_search(request):
                 "content_preview": strip_wikilinks(b.get("content", ""))[:200],
                 "matched_in": b.get("matched_in", []),
                 "field_scores": b.get("field_scores", {}),
+                "retrieval_strategy": b.get(
+                    "retrieval_strategy",
+                    "fuzzy",
+                ),
+                "tokens_hit": b.get("tokens_hit", {}),
+                "token_coverage": b.get("token_coverage", 0.0),
             })
 
         # === 向量通道(可选) — 排除已在 keyword_hits 里的桶,避免重复 ===
