@@ -84,6 +84,10 @@ scoring_weights:
   emotion_resonance: 2.0
   time_proximity: 1.5
   importance: 1.0
+  content_weight: 1.0
+  multi_token_fallback: false     # 开启后仅救回多关键词严格命中的漏检
+  multi_token_min_coverage: 0.4   # 推荐 0.4；越高越保守
+  procedure_intent_boost: 1.0     # 推荐评测后尝试 1.08；1.0 表示关闭加权
 
 # --- Fuzzy matching / 模糊匹配参数 ---
 matching:

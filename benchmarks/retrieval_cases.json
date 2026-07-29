@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "description": "Synthetic retrieval cases. No production memory text or identifiers.",
+  "buckets": [
+    {
+      "fixture_id": "northstar_runbook",
+      "name": "北星网关恢复步骤",
+      "subject": "北星网关",
+      "memory_kind": "procedure",
+      "domain": ["运维"],
+      "tags": ["北星网关", "快照", "恢复", "健康检查"],
+      "content": "先暂停写入，校验快照散列，再恢复数据并进行健康检查。",
+      "importance": 7
+    },
+    {
+      "fixture_id": "northstar_episode",
+      "name": "北星网关演练记录",
+      "subject": "北星网关",
+      "memory_kind": "episode",
+      "domain": ["运维"],
+      "tags": ["北星网关", "演练"],
+      "content": "周二参加恢复演练，讨论了快照和健康检查。",
+      "importance": 7
+    },
+    {
+      "fixture_id": "lumen_rule",
+      "name": "微光协议的轮值规则",
+      "subject": "微光协议",
+      "memory_kind": "fact",
+      "domain": ["协作"],
+      "tags": ["轮值", "补休", "规则"],
+      "content": "若夜间轮值超过两小时，次日安排一个补休时段。",
+      "importance": 7
+    },
+    {
+      "fixture_id": "lumen_reflection",
+      "name": "轮值后的感想",
+      "subject": "微光协议",
+      "memory_kind": "reflection",
+      "domain": ["成长"],
+      "tags": ["夜间轮值", "沟通", "成长"],
+      "content": "那次夜间轮值让我学会提前沟通，也更理解协作边界。",
+      "importance": 7
+    },
+    {
+      "fixture_id": "paper_preference",
+      "name": "短笺排版偏好",
+      "subject": "纸信",
+      "memory_kind": "preference",
+      "domain": ["创作"],
+      "tags": ["短笺", "排版", "留白"],
+      "content": "短笺使用清晰黑体、充足留白，并避免大面积黑色。",
+      "importance": 7
+    },
+    {
+      "fixture_id": "paper_episode",
+      "name": "第一次纸信校样",
+      "subject": "纸信",
+      "memory_kind": "episode",
+      "domain": ["创作"],
+      "tags": ["纸信", "校样"],
+      "content": "打印了一张黑白校样，检查了字体和边距。",
+      "importance": 7
+    },
+    {
+      "fixture_id": "orchid_recovery",
+      "name": "旧设备恢复备忘",
+      "memory_kind": "procedure",
+      "domain": ["维护"],
+      "tags": ["蓝塔"],
+      "content": "蓝塔凭证完成校验后，月门是第二步的恢复入口。",
+      "importance": 3,
+      "age_days": 180
+    }
+  ],
+  "queries": [
+    {
+      "query_id": "northstar_title",
+      "intent_group": "northstar",
+      "query": "北星网关恢复步骤",
+      "relevant": ["northstar_runbook"]
+    },
+    {
+      "query_id": "northstar_natural",
+      "intent_group": "northstar",
+      "query": "北星网关怎么从快照恢复并做健康检查",
+      "relevant": ["northstar_runbook"]
+    },
+    {
+      "query_id": "northstar_blurry",
+      "intent_group": "northstar",
+      "query": "查北星网关快照以及健康检查操作",
+      "relevant": ["northstar_runbook"]
+    },
+    {
+      "query_id": "lumen_title",
+      "intent_group": "lumen",
+      "query": "微光协议轮值规则",
+      "relevant": ["lumen_rule"]
+    },
+    {
+      "query_id": "lumen_natural",
+      "intent_group": "lumen",
+      "query": "夜间轮值超过两小时要怎么补休",
+      "relevant": ["lumen_rule"]
+    },
+    {
+      "query_id": "lumen_feeling",
+      "intent_group": "lumen_feeling",
+      "query": "那次夜间轮值带来了什么感受",
+      "relevant": ["lumen_reflection"]
+    },
+    {
+      "query_id": "paper_natural",
+      "intent_group": "paper",
+      "query": "纸信短笺排版要保留什么风格",
+      "relevant": ["paper_preference"]
+    },
+    {
+      "query_id": "orchid_cross_field",
+      "intent_group": "orchid",
+      "query": "查蓝塔和月门",
+      "relevant": ["orchid_recovery"]
+    },
+    {
+      "query_id": "unknown_protocol",
+      "intent_group": "unknown",
+      "query": "海底列车的蓝盐换轨协议",
+      "relevant": []
+    }
+  ]
+}
