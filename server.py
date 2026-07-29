@@ -55,6 +55,7 @@ from memory_context import feel_temporal_lens
 from identity_scope import can_access as identity_can_access
 from import_memory import ImportEngine
 from memory_contract import prepare_memory_candidate
+from memory_review import REVIEW_REASON_MESSAGES, assess_stored_memory
 from utils import load_config, setup_logging, strip_wikilinks, redact_sensitive_text, count_tokens_approx, is_internalized, is_protected, is_highlighted
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
@@ -1202,8 +1203,122 @@ async def trace(
 
 
 # =============================================================
-# Tool 5: yearn — identity-scoped persistent drives
-# 工具 5：yearn — 独立于记忆检索的持续牵引
+# Tool 5: review_queue — read-only owner review candidates
+# 工具 5：review_queue — 仅供记忆主人审阅的只读候选
+# =============================================================
+async def _collect_review_candidates(
+    identity: str,
+    *,
+    reason: str = "",
+    include_archive: bool = False,
+    limit: int = 20,
+) -> tuple[list[dict], int]:
+    """Build an identity-scoped review queue without changing any bucket."""
+    buckets = await bucket_mgr.list_all(include_archive=include_archive)
+    candidates = []
+    reason = (reason or "").strip()
+
+    for bucket in buckets:
+        metadata = bucket.get("metadata", {}) or {}
+        if not _identity_can_access(metadata, identity):
+            continue
+        # Shared memories may have a different owner. Keep them out of an
+        # identity's personal queue rather than assigning review by visibility.
+        if str(metadata.get("share_scope", "")).strip().lower() == "shared":
+            continue
+
+        report = assess_stored_memory(
+            metadata,
+            bucket.get("content", ""),
+            bucket_id=bucket.get("id", ""),
+        )
+        if not report["review_required"]:
+            continue
+        if reason and reason not in report["reason_codes"]:
+            continue
+
+        content_preview = redact_sensitive_text(
+            strip_wikilinks(str(bucket.get("content", "") or ""))
+        )[:200]
+        raw_tags = metadata.get("tags", []) or []
+        if isinstance(raw_tags, str):
+            tags = [raw_tags]
+        else:
+            tags = [str(tag) for tag in raw_tags if str(tag).strip()]
+        try:
+            importance = float(metadata.get("importance", 5))
+        except (TypeError, ValueError):
+            importance = 5.0
+        candidates.append({
+            "id": bucket.get("id", ""),
+            "name": metadata.get("name") or bucket.get("id", ""),
+            "memory_kind": metadata.get("memory_kind", ""),
+            "subject": metadata.get("subject", ""),
+            "tags": tags,
+            "importance": importance,
+            "created": metadata.get("created", ""),
+            "content_preview": content_preview,
+            **report,
+        })
+
+    candidates.sort(
+        key=lambda item: (
+            item["priority"],
+            item["importance"],
+            item["created"],
+        ),
+        reverse=True,
+    )
+    total = len(candidates)
+    return candidates[:max(1, min(int(limit), 200))], total
+
+
+@mcp.tool()
+async def review_queue(
+    reason: str = "",
+    max_results: int = 20,
+    include_archive: bool = False,
+) -> str:
+    """只读列出当前身份值得自行复核的旧记忆。可按 reason 过滤；不会修改、重标、合并、归档或删除任何内容。"""
+    identity = _mcp_identity.get()
+    try:
+        candidates, total = await _collect_review_candidates(
+            identity,
+            reason=reason,
+            include_archive=include_archive,
+            limit=max_results,
+        )
+    except Exception as exc:
+        logger.warning("Failed to build review queue: %s", type(exc).__name__)
+        return "待审阅候选暂时无法读取。"
+
+    if not candidates:
+        return f"当前身份: {identity}\n没有符合条件的待审阅记忆。"
+
+    lines = [
+        f"=== {identity} 的待审阅候选（只读）===",
+        "这里只说明检索锚点可能较弱；是否修改由记忆主人自己决定。",
+        f"共 {total} 条，本次显示 {len(candidates)} 条。",
+    ]
+    for item in candidates:
+        details = [
+            f"类型:{item['memory_kind'] or '缺失'}",
+            f"主体:{item['subject'] or '缺失'}",
+        ]
+        if item["tags"]:
+            details.append("标签:" + ",".join(item["tags"][:8]))
+        lines.extend([
+            f"\n[{item['name']}] bucket_id:{item['id']}",
+            "原因:" + "；".join(item["reasons"]),
+            " | ".join(details),
+            "内容线索:" + item["content_preview"],
+        ])
+    return "\n".join(lines)
+
+
+# =============================================================
+# Tool 6: yearn — identity-scoped persistent drives
+# 工具 6：yearn — 独立于记忆检索的持续牵引
 # =============================================================
 @mcp.tool()
 async def yearn(
@@ -1251,8 +1366,8 @@ async def yearn(
 
 
 # =============================================================
-# Tool 6: pulse — Heartbeat, system status + memory listing
-# 工具 6：pulse — 脉搏，系统状态 + 记忆列表
+# Tool 7: pulse — Heartbeat, system status + memory listing
+# 工具 7：pulse — 脉搏，系统状态 + 记忆列表
 # =============================================================
 @mcp.tool()
 async def pulse(include_archive: bool = False) -> str:
@@ -1323,8 +1438,8 @@ async def pulse(include_archive: bool = False) -> str:
 
 
 # =============================================================
-# Tool 6: dream — Dreaming, digest recent memories
-# 工具 6：dream — 做梦，消化最近的记忆
+# Tool 8: dream — Dreaming, digest recent memories
+# 工具 8：dream — 做梦，消化最近的记忆
 #
 # Reads recent surface-level buckets (≤10), returns them for
 # Claude to introspect under prompt guidance.
@@ -2127,6 +2242,59 @@ async def api_desires_get(request):
         "identity": identity,
         "identities": identities,
         "items": desire_engine.list(identity, include_closed=include_closed),
+    })
+
+
+@mcp.custom_route("/api/review-candidates", methods=["GET"])
+async def api_review_candidates_get(request):
+    """Return one identity's read-only memory quality review queue."""
+    from starlette.responses import JSONResponse
+
+    names = _desire_identity_names()
+    identity = (
+        request.query_params.get("identity")
+        or (names[0] if names else "")
+    ).strip()
+    if not identity or identity not in names:
+        return JSONResponse({"error": "unknown identity"}, status_code=404)
+
+    reason = (request.query_params.get("reason") or "").strip()
+    if reason and reason not in REVIEW_REASON_MESSAGES:
+        return JSONResponse({
+            "error": "unknown review reason",
+            "known_reasons": REVIEW_REASON_MESSAGES,
+        }, status_code=400)
+
+    include_archive = (
+        request.query_params.get("include_archive", "0").lower()
+        in {"1", "true", "yes"}
+    )
+    try:
+        limit = int(request.query_params.get("limit", "100"))
+    except (TypeError, ValueError):
+        limit = 100
+
+    try:
+        candidates, total = await _collect_review_candidates(
+            identity,
+            reason=reason,
+            include_archive=include_archive,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning("Failed to build dashboard review queue: %s", type(exc).__name__)
+        return JSONResponse(
+            {"error": "review queue unavailable"},
+            status_code=500,
+        )
+
+    return JSONResponse({
+        "identity": identity,
+        "identities": names,
+        "known_reasons": REVIEW_REASON_MESSAGES,
+        "total": total,
+        "items": candidates,
+        "read_only": True,
     })
 
 
